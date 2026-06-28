@@ -6,6 +6,7 @@ import unittest
 from codex_quota.quota import (
     _format_reset,
     account_line,
+    account_summary_line,
     failed_snapshot,
     indicator_label,
     last_updated_line,
@@ -45,6 +46,7 @@ class QuotaParsingTests(unittest.TestCase):
 
         self.assertEqual(snapshot.plan, "plus")
         self.assertEqual(account_line(snapshot), "Main: user@example.com (Plus)")
+        self.assertEqual(account_summary_line(snapshot, current=True), "● Main     H68% · W43%")
         self.assertEqual(indicator_label(snapshot), "H68% · W43%")
         self.assertEqual(status_name(snapshot), "warning")
         self.assertEqual(snapshot.windows[0].label, "5h")
@@ -91,6 +93,28 @@ class QuotaParsingTests(unittest.TestCase):
         self.assertEqual(status_name(snapshot_for_left(70)), "warning")
         self.assertEqual(status_name(snapshot_for_left(30)), "warning")
         self.assertEqual(status_name(snapshot_for_left(29)), "danger")
+
+    def test_status_prefers_5h_window_over_weekly_window(self):
+        snapshot = parse_rate_limits(
+            {
+                "rateLimits": {
+                    "primary": {
+                        "usedPercent": 10,
+                        "windowDurationMins": 300,
+                    },
+                    "secondary": {
+                        "usedPercent": 95,
+                        "windowDurationMins": 10080,
+                    },
+                }
+            },
+            alias="Main",
+            email=None,
+            now=100,
+        )
+
+        self.assertEqual(indicator_label(snapshot), "H90% · W5%")
+        self.assertEqual(status_name(snapshot), "ok")
 
     def test_progress_bar_is_ten_cells(self):
         self.assertEqual(progress_bar(68), "███████░░░")

@@ -11,6 +11,10 @@ class AppConfig:
     current_alias: str = "Main"
     refresh_interval_seconds: int = 60
 
+    @property
+    def accounts_dir(self) -> Path:
+        return self.runtime_dir / "accounts"
+
 
 def load_config() -> AppConfig:
     root = Path(__file__).resolve().parents[1]

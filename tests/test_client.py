@@ -73,6 +73,35 @@ class CodexAppServerClientTests(unittest.TestCase):
                 timeout_seconds=2,
             ).read_rate_limits()
 
+    def test_passes_codex_home_to_app_server_environment(self):
+        script = _write_fake_server(
+            """
+            import json
+            import os
+            import sys
+
+            for _ in range(2):
+                request = json.loads(sys.stdin.readline())
+                if request["id"] == 1:
+                    print(json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}), flush=True)
+                elif request["id"] == 2:
+                    print(json.dumps({
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "result": {"codex_home": os.environ.get("CODEX_HOME")}
+                    }), flush=True)
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            result = CodexAppServerClient(
+                command=[sys.executable, str(script)],
+                timeout_seconds=2,
+                codex_home=Path(tempdir),
+            ).read_rate_limits()
+
+        self.assertEqual(result["codex_home"], tempdir)
+
 
 def _write_fake_server(source: str) -> Path:
     tempdir = tempfile.TemporaryDirectory()

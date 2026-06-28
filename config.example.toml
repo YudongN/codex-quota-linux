@@ -1,3 +1,12 @@
 current_alias = "Main"
 refresh_interval_seconds = 120
 
+# Optional V2 standby accounts are discovered from:
+# .runtime/accounts/<Alias>/auth.json
+#
+# Example:
+# .runtime/accounts/Work/auth.json
+# .runtime/accounts/Backup/auth.json
+#
+# Recommended login flow:
+# ./codex-quota login Work

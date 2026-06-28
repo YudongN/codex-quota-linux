@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import select
 import subprocess
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -18,14 +20,24 @@ class RpcResult:
 
 
 class CodexAppServerClient:
-    def __init__(self, command: list[str] | None = None, timeout_seconds: float = 20.0):
+    def __init__(
+        self,
+        command: list[str] | None = None,
+        timeout_seconds: float = 20.0,
+        codex_home: Path | None = None,
+    ):
         self.command = command or ["codex", "app-server", "--stdio"]
         self.timeout_seconds = timeout_seconds
+        self.codex_home = codex_home
 
     def read_rate_limits(self) -> dict[str, Any]:
         return self._request("account/rateLimits/read", None).result
 
     def _request(self, method: str, params: Any) -> RpcResult:
+        env = None
+        if self.codex_home is not None:
+            env = os.environ.copy()
+            env["CODEX_HOME"] = str(self.codex_home)
         process = subprocess.Popen(
             self.command,
             stdin=subprocess.PIPE,
@@ -33,6 +45,7 @@ class CodexAppServerClient:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            env=env,
         )
         try:
             assert process.stdin is not None

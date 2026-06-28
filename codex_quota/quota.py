@@ -92,10 +92,10 @@ def status_name(snapshot: QuotaSnapshot, now: int | None = None) -> str:
         return "unknown"
     if snapshot.error and _cache_is_expired(snapshot, now):
         return "stale"
-    lowest = min(window.left_percent for window in snapshot.windows)
-    if lowest < 30:
+    window = _status_window(snapshot.windows)
+    if window.left_percent < 30:
         return "danger"
-    if lowest <= 70:
+    if window.left_percent <= 70:
         return "warning"
     return "ok"
 
@@ -120,6 +120,11 @@ def account_line(snapshot: QuotaSnapshot) -> str:
     account = snapshot.email or "Unknown account"
     plan = f" ({snapshot.plan.title()})" if snapshot.plan else ""
     return f"{snapshot.alias}: {account}{plan}"
+
+
+def account_summary_line(snapshot: QuotaSnapshot, *, current: bool = False) -> str:
+    marker = "●" if current else " "
+    return f"{marker} {snapshot.alias:<8} {indicator_label(snapshot)}"
 
 
 def last_updated_line(
@@ -254,6 +259,13 @@ def _cache_is_expired(snapshot: QuotaSnapshot, now: int | None = None) -> bool:
     if snapshot.updated_at <= 0:
         return True
     return current - snapshot.updated_at > CACHE_EXPIRES_AFTER_SECONDS
+
+
+def _status_window(windows: list[QuotaWindow]) -> QuotaWindow:
+    for window in windows:
+        if window.key == "H":
+            return window
+    return windows[0]
 
 
 def _clamp_percent(value: int) -> int:
