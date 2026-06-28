@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +32,19 @@ def load_config() -> AppConfig:
         current_alias=alias if isinstance(alias, str) and alias else "Main",
         refresh_interval_seconds=interval if isinstance(interval, int) else 60,
     )
+
+
+def save_config(config: AppConfig, *, current_alias: str | None = None) -> None:
+    config.runtime_dir.mkdir(parents=True, exist_ok=True)
+    path = config.runtime_dir / "config.toml"
+    alias = current_alias if current_alias is not None else config.current_alias
+    text = (
+        f"current_alias = {json.dumps(alias)}\n"
+        f"refresh_interval_seconds = {config.refresh_interval_seconds}\n"
+    )
+    temp_path = path.with_name(".config.toml.tmp")
+    temp_path.write_text(text)
+    temp_path.replace(path)
 
 
 def _read_simple_config(path: Path) -> dict[str, object]:

@@ -16,6 +16,7 @@ from .quota import (
     last_updated_line,
     menu_window_line,
 )
+from .switcher import SwitchError, switch_account
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -26,6 +27,8 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.add_parser("doctor", help="check local dependencies")
     login_parser = subparsers.add_parser("login", help="login a standby account")
     login_parser.add_argument("alias", help="standby account alias, e.g. Work")
+    switch_parser = subparsers.add_parser("switch", help="soft-switch current Codex account")
+    switch_parser.add_argument("alias", help="standby account alias, e.g. Work")
     args = parser.parse_args(argv)
 
     command = args.command or "run"
@@ -37,6 +40,8 @@ def main(argv: list[str] | None = None) -> int:
         return _doctor()
     if command == "login":
         return _login(args.alias)
+    if command == "switch":
+        return _switch(args.alias)
     parser.error(f"unknown command: {command}")
     return 2
 
@@ -104,6 +109,24 @@ def _login(alias: str) -> int:
     print(f"Logging in standby account '{codex_home.name}'")
     print(f"CODEX_HOME={codex_home}")
     return subprocess.call(["codex", "login"], env=env)
+
+
+def _switch(alias: str) -> int:
+    config = load_config()
+    try:
+        result = switch_account(config, alias)
+    except (SwitchError, ValueError) as exc:
+        print(f"Switch failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"Switched to {result.alias}")
+    print(f"Auth: {result.auth_path}")
+    if result.backup_path:
+        print(f"Backup: {result.backup_path}")
+    if result.captured_current_path:
+        print(f"Saved previous account slot: {result.captured_current_path}")
+    print("New Codex processes will use this account.")
+    print("Codex Desktop / running app-server may need restart.")
+    return 0
 
 
 if __name__ == "__main__":

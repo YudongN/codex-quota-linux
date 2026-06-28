@@ -10,3 +10,6 @@ refresh_interval_seconds = 120
 #
 # Recommended login flow:
 # ./codex-quota login Work
+#
+# V3 soft switch:
+# ./codex-quota switch Work
