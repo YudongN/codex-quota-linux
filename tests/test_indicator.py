@@ -1,8 +1,13 @@
-import unittest
 import inspect
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import unittest
 
 from codex_quota import indicator
-from codex_quota.indicator import _icon_for_status
+from codex_quota.app import QuotaState
+from codex_quota.config import AppConfig
+from codex_quota.indicator import _icon_for_status, _reorder_quota_for_alias, _switch_then_notify
+from codex_quota.quota import QuotaSnapshot
 
 
 class IndicatorTests(unittest.TestCase):
@@ -17,6 +22,65 @@ class IndicatorTests(unittest.TestCase):
         source = inspect.getsource(indicator.run_indicator)
 
         self.assertNotIn("restart running Codex apps if needed", source)
+
+    def test_switch_then_notify_notifies_before_slow_refresh(self):
+        calls: list[str] = []
+
+        with TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            config = AppConfig(project_root=root, runtime_dir=root / ".runtime")
+
+            def switch(config, alias):
+                calls.append(f"switch:{alias}")
+
+            def load():
+                calls.append("load")
+                return config
+
+            def notify(alias):
+                calls.append(f"notify:{alias}")
+
+            _switch_then_notify(
+                config,
+                "Work",
+                switch=switch,
+                load=load,
+                notify=notify,
+            )
+            calls.append("fetch_state")
+
+        self.assertEqual(calls, ["switch:Work", "load", "notify:Work", "fetch_state"])
+
+    def test_reorder_quota_for_alias_uses_cached_standby_before_refresh(self):
+        personal = QuotaSnapshot(
+            alias="Personal",
+            email=None,
+            plan=None,
+            windows=[],
+            updated_at=1,
+        )
+        work = QuotaSnapshot(
+            alias="Work",
+            email=None,
+            plan=None,
+            windows=[],
+            updated_at=2,
+        )
+        backup = QuotaSnapshot(
+            alias="Backup",
+            email=None,
+            plan=None,
+            windows=[],
+            updated_at=3,
+        )
+
+        reordered = _reorder_quota_for_alias(
+            QuotaState(current=personal, standby=[backup, work]),
+            "Work",
+        )
+
+        self.assertEqual(reordered.current.alias, "Work")
+        self.assertEqual([snapshot.alias for snapshot in reordered.standby], ["Personal", "Backup"])
 
 
 if __name__ == "__main__":

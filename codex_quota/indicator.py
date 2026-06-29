@@ -103,10 +103,14 @@ def run_indicator(config: AppConfig) -> int:
         refresh_async()
 
     def switch_async(alias: str) -> None:
-        def apply_switch_success(new_config: AppConfig, quota: QuotaState) -> None:
+        def apply_switch_selected(new_config: AppConfig, alias: str) -> None:
             state["config"] = new_config
             state["message"] = None
-            notify_switch(alias)
+            current_quota = state.get("quota")
+            if isinstance(current_quota, QuotaState):
+                apply_state(_reorder_quota_for_alias(current_quota, alias))
+
+        def apply_switch_success(quota: QuotaState) -> None:
             apply_state(quota)
 
         def apply_switch_error(message: str) -> None:
@@ -119,10 +123,10 @@ def run_indicator(config: AppConfig) -> int:
             current_config = state["config"]
             assert isinstance(current_config, AppConfig)
             try:
-                switch_account(current_config, alias)
-                new_config = load_config()
+                new_config = _switch_then_notify(current_config, alias)
+                GLib.idle_add(apply_switch_selected, new_config, alias)
                 quota = fetch_state(new_config)
-                GLib.idle_add(apply_switch_success, new_config, quota)
+                GLib.idle_add(apply_switch_success, quota)
             except (SwitchError, ValueError) as exc:
                 GLib.idle_add(apply_switch_error, f"Switch failed: {exc}")
 
@@ -157,6 +161,33 @@ def run_indicator(config: AppConfig) -> int:
     GLib.timeout_add_seconds(config.standby_refresh_interval_seconds, standby_refresh_timer)
     Gtk.main()
     return 0
+
+
+def _switch_then_notify(
+    config: AppConfig,
+    alias: str,
+    *,
+    switch=switch_account,
+    load=load_config,
+    notify=notify_switch,
+) -> AppConfig:
+    switch(config, alias)
+    new_config = load()
+    notify(alias)
+    return new_config
+
+
+def _reorder_quota_for_alias(quota: QuotaState, alias: str) -> QuotaState:
+    if quota.current.alias == alias:
+        return quota
+    for index, snapshot in enumerate(quota.standby):
+        if snapshot.alias != alias:
+            continue
+        standby = [quota.current]
+        standby.extend(quota.standby[:index])
+        standby.extend(quota.standby[index + 1 :])
+        return QuotaState(current=snapshot, standby=standby)
+    return quota
 
 
 def _append_current_account_section(menu, snapshot) -> None:
