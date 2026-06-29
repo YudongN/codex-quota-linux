@@ -1,19 +1,21 @@
 from __future__ import annotations
 
 import argparse
-import os
-import subprocess
 import sys
 
-from .accounts import account_slot_path
 from .app import fetch_state
+from .auth_store import AddAccountError, add_account
 from .config import load_config
 from .indicator import run_indicator
+from .legacy import migrate_legacy_homes
+from .notifications import notify_switch
 from .quota import (
-    account_line,
-    account_summary_line,
+    header_action_line,
+    header_line,
     indicator_label,
     last_updated_line,
+    menu_limit_line,
+    menu_meter_line,
     menu_window_line,
 )
 from .switcher import SwitchError, switch_account
@@ -25,10 +27,14 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.add_parser("run", help="run the AppIndicator")
     subparsers.add_parser("once", help="print one quota snapshot")
     subparsers.add_parser("doctor", help="check local dependencies")
-    login_parser = subparsers.add_parser("login", help="login a standby account")
-    login_parser.add_argument("alias", help="standby account alias, e.g. Work")
+    add_parser = subparsers.add_parser("add", help="add an account by alias")
+    add_parser.add_argument("alias", help="account alias, e.g. Personal")
     switch_parser = subparsers.add_parser("switch", help="soft-switch current Codex account")
-    switch_parser.add_argument("alias", help="standby account alias, e.g. Work")
+    switch_parser.add_argument("alias", help="account alias, e.g. Work")
+    subparsers.add_parser(
+        "migrate-legacy-homes",
+        help="archive old full CODEX_HOME files under .runtime/accounts",
+    )
     args = parser.parse_args(argv)
 
     command = args.command or "run"
@@ -38,10 +44,12 @@ def main(argv: list[str] | None = None) -> int:
         return _once()
     if command == "doctor":
         return _doctor()
-    if command == "login":
-        return _login(args.alias)
+    if command == "add":
+        return _add(args.alias)
     if command == "switch":
         return _switch(args.alias)
+    if command == "migrate-legacy-homes":
+        return _migrate_legacy_homes()
     parser.error(f"unknown command: {command}")
     return 2
 
@@ -50,16 +58,11 @@ def _once() -> int:
     config = load_config()
     state = fetch_state(config)
     snapshot = state.current
-    print(account_line(snapshot))
-    for window in snapshot.windows:
-        print(menu_window_line(window))
-    print(last_updated_line(snapshot))
+    _print_snapshot(snapshot)
     if state.standby:
-        print()
-        print("Accounts")
-        print(account_summary_line(snapshot, current=True))
         for standby in state.standby:
-            print(account_summary_line(standby))
+            print("─────────────────────────────")
+            _print_standby_snapshot(standby)
     print(f"Top bar: {indicator_label(snapshot)}")
     return 1 if snapshot.error or any(item.error for item in state.standby) else 0
 
@@ -96,19 +99,17 @@ def _doctor() -> int:
     return 0 if ok else 1
 
 
-def _login(alias: str) -> int:
+def _add(alias: str) -> int:
     config = load_config()
     try:
-        codex_home = account_slot_path(config.accounts_dir, alias)
-    except ValueError as exc:
-        print(f"Invalid account alias: {exc}", file=sys.stderr)
-        return 2
-    codex_home.mkdir(parents=True, exist_ok=True)
-    env = os.environ.copy()
-    env["CODEX_HOME"] = str(codex_home)
-    print(f"Logging in standby account '{codex_home.name}'")
-    print(f"CODEX_HOME={codex_home}")
-    return subprocess.call(["codex", "login"], env=env)
+        result = add_account(config, alias)
+    except (AddAccountError, ValueError) as exc:
+        print(f"Add account failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"Added account {result.alias}")
+    print(f"Stored auth: {result.auth_path}")
+    print("Restored original ~/.codex/auth.json")
+    return 0
 
 
 def _switch(alias: str) -> int:
@@ -120,13 +121,45 @@ def _switch(alias: str) -> int:
         return 1
     print(f"Switched to {result.alias}")
     print(f"Auth: {result.auth_path}")
-    if result.backup_path:
-        print(f"Backup: {result.backup_path}")
-    if result.captured_current_path:
-        print(f"Saved previous account slot: {result.captured_current_path}")
+    notify_switch(result.alias)
     print("New Codex processes will use this account.")
     print("Codex Desktop / running app-server may need restart.")
     return 0
+
+
+def _migrate_legacy_homes() -> int:
+    config = load_config()
+    report = migrate_legacy_homes(config.runtime_dir)
+    if not report.migrated_accounts:
+        print("No legacy CODEX_HOME files found.")
+        return 0
+    print(f"Archived legacy files: {report.archive_root}")
+    for alias in report.migrated_accounts:
+        print(f"- {alias}")
+    if report.conversation_candidates:
+        print("Conversation-state candidates were archived, not merged:")
+        for item in report.conversation_candidates:
+            print(f"- {item}")
+    return 0
+
+
+def _print_snapshot(snapshot) -> None:
+    print(header_line(snapshot))
+    print(snapshot.email or "Unknown account")
+    for window in snapshot.windows:
+        print(menu_limit_line(window))
+        print(menu_meter_line(window))
+    if not snapshot.windows:
+        print("Quota unavailable")
+    print(last_updated_line(snapshot))
+
+
+def _print_standby_snapshot(snapshot) -> None:
+    print(header_action_line(snapshot, "Switch"))
+    for window in snapshot.windows:
+        print(menu_window_line(window))
+    if not snapshot.windows:
+        print("Quota unavailable")
 
 
 if __name__ == "__main__":

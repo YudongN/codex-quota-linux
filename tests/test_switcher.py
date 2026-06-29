@@ -8,7 +8,7 @@ from codex_quota.switcher import SwitchError, switch_account
 
 
 class SwitcherTests(unittest.TestCase):
-    def test_switch_account_replaces_auth_backs_up_and_updates_config(self):
+    def test_switch_account_replaces_auth_without_persistent_backup(self):
         with TemporaryDirectory() as tempdir:
             root = Path(tempdir)
             runtime = root / ".runtime"
@@ -22,24 +22,22 @@ class SwitcherTests(unittest.TestCase):
             config = AppConfig(
                 project_root=root,
                 runtime_dir=runtime,
-                current_alias="Main",
-                refresh_interval_seconds=120,
+                selected_alias="Main",
+                active_refresh_interval_seconds=120,
+                standby_refresh_interval_seconds=600,
             )
 
             result = switch_account(config, "Work", codex_home=codex_home)
 
             self.assertEqual((codex_home / "auth.json").read_text(), '{"account":"work"}')
             self.assertEqual(oct((codex_home / "auth.json").stat().st_mode & 0o777), "0o600")
-            self.assertIsNotNone(result.backup_path)
-            assert result.backup_path is not None
-            self.assertEqual(result.backup_path.read_text(), '{"account":"main"}')
-            self.assertEqual(oct(result.backup_path.stat().st_mode & 0o777), "0o600")
-            captured = runtime / "accounts" / "Main" / "auth.json"
-            self.assertEqual(captured.read_text(), '{"account":"main"}')
-            self.assertEqual(oct(captured.stat().st_mode & 0o777), "0o600")
+            self.assertFalse((runtime / "backups").exists())
+            self.assertFalse((runtime / "accounts" / "Main" / "auth.json").exists())
             self.assertEqual(
                 (runtime / "config.toml").read_text(),
-                'current_alias = "Work"\nrefresh_interval_seconds = 120\n',
+                'selected_alias = "Work"\n'
+                "active_refresh_interval_seconds = 120\n"
+                "standby_refresh_interval_seconds = 600\n",
             )
 
     def test_switch_account_without_existing_auth_has_no_backup(self):
@@ -55,8 +53,7 @@ class SwitcherTests(unittest.TestCase):
             result = switch_account(config, "Work", codex_home=codex_home)
 
             self.assertEqual((codex_home / "auth.json").read_text(), '{"account":"work"}')
-            self.assertIsNone(result.backup_path)
-            self.assertIsNone(result.captured_current_path)
+            self.assertFalse((runtime / "backups").exists())
 
     def test_switch_account_requires_existing_slot_auth(self):
         with TemporaryDirectory() as tempdir:

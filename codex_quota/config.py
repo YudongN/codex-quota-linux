@@ -9,38 +9,50 @@ from pathlib import Path
 class AppConfig:
     project_root: Path
     runtime_dir: Path
-    current_alias: str = "Main"
-    refresh_interval_seconds: int = 60
+    selected_alias: str = ""
+    active_refresh_interval_seconds: int = 120
+    standby_refresh_interval_seconds: int = 600
 
     @property
     def accounts_dir(self) -> Path:
         return self.runtime_dir / "accounts"
 
 
-def load_config() -> AppConfig:
-    root = Path(__file__).resolve().parents[1]
+def load_config(root: Path | None = None) -> AppConfig:
+    root = root or Path(__file__).resolve().parents[1]
     runtime_dir = root / ".runtime"
     config_path = runtime_dir / "config.toml"
     values: dict[str, object] = {}
     if config_path.exists():
         values = _read_simple_config(config_path)
-    alias = values.get("current_alias", "Main")
-    interval = values.get("refresh_interval_seconds", 60)
-    return AppConfig(
+    alias = values.get("selected_alias")
+    if not isinstance(alias, str):
+        alias = values.get("current_alias")
+    config = AppConfig(
         project_root=root,
         runtime_dir=runtime_dir,
-        current_alias=alias if isinstance(alias, str) and alias else "Main",
-        refresh_interval_seconds=interval if isinstance(interval, int) else 60,
+        selected_alias=alias if isinstance(alias, str) else "",
+        active_refresh_interval_seconds=_int_value(
+            values.get("active_refresh_interval_seconds"),
+            120,
+        ),
+        standby_refresh_interval_seconds=_int_value(
+            values.get("standby_refresh_interval_seconds"),
+            600,
+        ),
     )
+    save_config(config)
+    return config
 
 
-def save_config(config: AppConfig, *, current_alias: str | None = None) -> None:
+def save_config(config: AppConfig, *, selected_alias: str | None = None) -> None:
     config.runtime_dir.mkdir(parents=True, exist_ok=True)
     path = config.runtime_dir / "config.toml"
-    alias = current_alias if current_alias is not None else config.current_alias
+    alias = selected_alias if selected_alias is not None else config.selected_alias
     text = (
-        f"current_alias = {json.dumps(alias)}\n"
-        f"refresh_interval_seconds = {config.refresh_interval_seconds}\n"
+        f"selected_alias = {json.dumps(alias)}\n"
+        f"active_refresh_interval_seconds = {config.active_refresh_interval_seconds}\n"
+        f"standby_refresh_interval_seconds = {config.standby_refresh_interval_seconds}\n"
     )
     temp_path = path.with_name(".config.toml.tmp")
     temp_path.write_text(text)
@@ -62,3 +74,7 @@ def _read_simple_config(path: Path) -> dict[str, object]:
             except ValueError:
                 values[key] = value
     return values
+
+
+def _int_value(value: object, default: int) -> int:
+    return value if isinstance(value, int) and value > 0 else default

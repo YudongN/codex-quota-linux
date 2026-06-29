@@ -8,8 +8,11 @@ from codex_quota.quota import (
     account_line,
     account_summary_line,
     failed_snapshot,
+    header_action_line,
     indicator_label,
     last_updated_line,
+    menu_limit_line,
+    menu_meter_line,
     menu_window_line,
     parse_rate_limits,
     progress_bar,
@@ -46,8 +49,8 @@ class QuotaParsingTests(unittest.TestCase):
 
         self.assertEqual(snapshot.plan, "plus")
         self.assertEqual(account_line(snapshot), "Main: user@example.com (Plus)")
-        self.assertEqual(account_summary_line(snapshot, current=True), "● Main     H68% · W43%")
-        self.assertEqual(indicator_label(snapshot), "H68% · W43%")
+        self.assertEqual(account_summary_line(snapshot, current=True), "● Main     H68 · W43")
+        self.assertEqual(indicator_label(snapshot), "H68 · W43")
         self.assertEqual(status_name(snapshot), "warning")
         self.assertEqual(snapshot.windows[0].label, "5h")
         self.assertEqual(snapshot.windows[1].label, "7d")
@@ -70,7 +73,7 @@ class QuotaParsingTests(unittest.TestCase):
             now=100,
         )
 
-        self.assertEqual(indicator_label(snapshot), "M99%")
+        self.assertEqual(indicator_label(snapshot), "M99")
         self.assertEqual(status_name(snapshot), "ok")
 
     def test_status_thresholds_follow_icon_policy(self):
@@ -113,12 +116,12 @@ class QuotaParsingTests(unittest.TestCase):
             now=100,
         )
 
-        self.assertEqual(indicator_label(snapshot), "H90% · W5%")
+        self.assertEqual(indicator_label(snapshot), "H90 · W5")
         self.assertEqual(status_name(snapshot), "ok")
 
-    def test_progress_bar_is_ten_cells(self):
-        self.assertEqual(progress_bar(68), "███████░░░")
-        self.assertEqual(progress_bar(43), "████░░░░░░")
+    def test_progress_bar_is_twelve_cells(self):
+        self.assertEqual(progress_bar(68), "████████░░░░")
+        self.assertEqual(progress_bar(43), "█████░░░░░░░")
 
     def test_menu_line_contains_label_percent_and_left_text(self):
         snapshot = parse_rate_limits(
@@ -136,7 +139,162 @@ class QuotaParsingTests(unittest.TestCase):
         )
 
         self.assertIn("5h", menu_window_line(snapshot.windows[0]))
-        self.assertEqual(menu_window_line(snapshot.windows[0]), "5h: 68% left")
+        self.assertEqual(menu_window_line(snapshot.windows[0]), "5h 68%")
+
+    def test_menu_line_uses_relative_reset_for_same_day(self):
+        now = datetime.now().astimezone().replace(
+            hour=14, minute=8, second=0, microsecond=0
+        )
+        window = parse_rate_limits(
+            {
+                "rateLimits": {
+                    "primary": {
+                        "usedPercent": 32,
+                        "windowDurationMins": 300,
+                        "resetsAt": int((now + timedelta(hours=2, minutes=14)).timestamp()),
+                    }
+                }
+            },
+            alias="Personal",
+            email=None,
+            now=100,
+        ).windows[0]
+
+        self.assertEqual(
+            menu_limit_line(window, now=now),
+            "5h limit · reset in 2h 14m",
+        )
+        self.assertEqual(
+            menu_meter_line(window),
+            "████████░░░░  68%",
+        )
+
+    def test_menu_line_uses_short_day_count_for_monthly_reset(self):
+        tz = datetime.now().astimezone().tzinfo
+        now = datetime(2026, 6, 1, 14, 8, tzinfo=tz)
+        window = parse_rate_limits(
+            {
+                "rateLimits": {
+                    "planType": "free",
+                    "individualLimit": {
+                        "remainingPercent": 100,
+                        "resetsAt": int(datetime(2026, 6, 29, 9, 0, tzinfo=tz).timestamp()),
+                    },
+                }
+            },
+            alias="Backup",
+            email=None,
+            now=100,
+        ).windows[0]
+
+        self.assertEqual(
+            menu_window_line(window, now=now),
+            "1mo 100% · reset Jun 29",
+        )
+
+    def test_menu_line_uses_weekday_time_for_non_today_reset(self):
+        now = datetime.now().astimezone().replace(
+            hour=14, minute=8, second=0, microsecond=0
+        )
+        reset = now + timedelta(days=3)
+        reset = reset.replace(hour=9, minute=0)
+        window = parse_rate_limits(
+            {
+                "rateLimits": {
+                    "secondary": {
+                        "usedPercent": 57,
+                        "windowDurationMins": 10080,
+                        "resetsAt": int(reset.timestamp()),
+                    }
+                }
+            },
+            alias="Personal",
+            email=None,
+            now=100,
+        ).windows[0]
+
+        self.assertEqual(
+            menu_window_line(window, now=now),
+            f"7d 43% · reset {reset.strftime('%a %H:%M')}",
+        )
+
+    def test_reset_text_follows_menu_time_rules(self):
+        tz = datetime.now().astimezone().tzinfo
+        now = datetime(2026, 6, 29, 14, 8, tzinfo=tz)
+
+        def line_for(delta: timedelta) -> str:
+            window = parse_rate_limits(
+                {
+                    "rateLimits": {
+                        "primary": {
+                            "usedPercent": 32,
+                            "windowDurationMins": 300,
+                            "resetsAt": int((now + delta).timestamp()),
+                        }
+                    }
+                },
+                alias="Personal",
+                email=None,
+                now=100,
+            ).windows[0]
+            return menu_limit_line(window, now=now)
+
+        self.assertEqual(line_for(timedelta(seconds=30)), "5h limit · reset now")
+        self.assertEqual(line_for(timedelta(minutes=42)), "5h limit · reset in 42m")
+        self.assertEqual(line_for(timedelta(hours=2, minutes=14)), "5h limit · reset in 2h 14m")
+        self.assertEqual(line_for(timedelta(hours=7, minutes=22)), "5h limit · reset today 21:30")
+        self.assertEqual(line_for(timedelta(hours=18)), "5h limit · reset tomorrow 08:08")
+        self.assertEqual(line_for(timedelta(days=4, hours=3, minutes=22)), "5h limit · reset Fri 17:30")
+
+        same_year = parse_rate_limits(
+            {
+                "rateLimits": {
+                    "primary": {
+                        "usedPercent": 32,
+                        "windowDurationMins": 300,
+                        "resetsAt": int(datetime(2026, 7, 8, 9, 0, tzinfo=tz).timestamp()),
+                    }
+                }
+            },
+            alias="Personal",
+            email=None,
+            now=100,
+        ).windows[0]
+        next_year = parse_rate_limits(
+            {
+                "rateLimits": {
+                    "primary": {
+                        "usedPercent": 32,
+                        "windowDurationMins": 300,
+                        "resetsAt": int(datetime(2027, 1, 3, 9, 0, tzinfo=tz).timestamp()),
+                    }
+                }
+            },
+            alias="Personal",
+            email=None,
+            now=100,
+        ).windows[0]
+
+        self.assertEqual(menu_limit_line(same_year, now=now), "5h limit · reset Jul 8")
+        self.assertEqual(menu_limit_line(next_year, now=now), "5h limit · reset Jan 3, 2027")
+
+    def test_header_action_line_adds_switch_action(self):
+        snapshot = parse_rate_limits(
+            {
+                "rateLimits": {
+                    "planType": "team",
+                    "primary": {
+                        "usedPercent": 9,
+                        "windowDurationMins": 300,
+                    },
+                }
+            },
+            alias="Work",
+            email="work@example.com",
+            now=100,
+        )
+
+        self.assertEqual(header_action_line(snapshot, "Switch"), "Work · Team                 Switch")
 
     def test_reset_format_uses_time_today_and_date_otherwise(self):
         now = datetime.now().astimezone().replace(
@@ -185,9 +343,9 @@ class QuotaParsingTests(unittest.TestCase):
 
         self.assertTrue(stale.is_stale)
         self.assertEqual(stale.email, "user@example.com")
-        self.assertEqual(indicator_label(stale), "H68% · W43%")
+        self.assertEqual(indicator_label(stale), "H68 · W43")
         expected_time = datetime.fromtimestamp(100).astimezone().strftime("%H:%M:%S")
-        self.assertEqual(last_updated_line(stale, now=120), f"Last updated: {expected_time}")
+        self.assertEqual(last_updated_line(stale, now=120), f"Updated at {expected_time}")
         self.assertEqual(status_name(stale, now=120), "warning")
         self.assertEqual(status_name(stale, now=701), "stale")
         self.assertIn(
@@ -204,7 +362,7 @@ class QuotaParsingTests(unittest.TestCase):
         )
 
         self.assertEqual(status_name(snapshot), "unknown")
-        self.assertEqual(last_updated_line(snapshot), "Last updated: never")
+        self.assertEqual(last_updated_line(snapshot), "Updated at never")
 
 
 if __name__ == "__main__":

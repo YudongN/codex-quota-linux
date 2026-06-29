@@ -84,7 +84,7 @@ def failed_snapshot(
 def indicator_label(snapshot: QuotaSnapshot) -> str:
     if not snapshot.windows:
         return "Quota unavailable"
-    return " · ".join(f"{window.key}{window.left_percent}%" for window in snapshot.windows)
+    return " · ".join(f"{window.key}{window.left_percent}" for window in snapshot.windows)
 
 
 def status_name(snapshot: QuotaSnapshot, now: int | None = None) -> str:
@@ -100,20 +100,40 @@ def status_name(snapshot: QuotaSnapshot, now: int | None = None) -> str:
     return "ok"
 
 
-def progress_bar(percent: int, width: int = 10) -> str:
+def progress_bar(percent: int, width: int = 12) -> str:
     filled = round(_clamp_percent(percent) / 100 * width)
     return "█" * filled + "░" * (width - filled)
 
 
-def menu_window_line(window: QuotaWindow) -> str:
-    reset = _format_reset(window.reset_at)
-    reset_text = f" (resets {reset})" if reset else ""
-    return f"{window.label}: {window.left_percent}% left{reset_text}"
+def menu_limit_line(
+    window: QuotaWindow,
+    *,
+    now: datetime | None = None,
+) -> str:
+    return f"{window.label} limit · {_format_menu_reset(window, now=now)}"
+
+
+def menu_meter_line(window: QuotaWindow) -> str:
+    return f"{progress_bar(window.left_percent)}  {window.left_percent}%"
+
+
+def menu_window_line(
+    window: QuotaWindow,
+    *,
+    now: datetime | None = None,
+) -> str:
+    reset = _format_menu_reset(window, now=now)
+    reset_text = f" · {reset}" if reset else ""
+    return f"{window.label} {window.left_percent}%{reset_text}"
 
 
 def header_line(snapshot: QuotaSnapshot) -> str:
     plan = f" · {snapshot.plan.title()}" if snapshot.plan else ""
-    return f"Codex Quota — {snapshot.alias}{plan}"
+    return f"{snapshot.alias}{plan}"
+
+
+def header_action_line(snapshot: QuotaSnapshot, action: str) -> str:
+    return f"{header_line(snapshot):<27} {action}"
 
 
 def account_line(snapshot: QuotaSnapshot) -> str:
@@ -138,8 +158,8 @@ def last_updated_line(
     else:
         text = datetime.fromtimestamp(snapshot.updated_at).astimezone().strftime("%H:%M:%S")
     if snapshot.error and include_error:
-        return f"Last updated: {text} (stale: {snapshot.error})"
-    return f"Last updated: {text}"
+        return f"Updated at {text} (stale: {snapshot.error})"
+    return f"Updated at {text}"
 
 
 def save_cache(path: Path, snapshot: QuotaSnapshot) -> None:
@@ -213,7 +233,7 @@ def _extract_windows(snapshot: dict[str, Any]) -> list[QuotaWindow]:
             windows.append(
                 QuotaWindow(
                     key="M",
-                    label="M",
+                    label="1mo",
                     left_percent=_clamp_percent(round(remaining)),
                     reset_at=individual.get("resetsAt")
                     if isinstance(individual.get("resetsAt"), int)
@@ -229,7 +249,7 @@ def _labels_for_duration(duration_mins: Any) -> tuple[str, str]:
     if duration_mins == 10080:
         return "W", "7d"
     if isinstance(duration_mins, int) and duration_mins >= 28 * 24 * 60:
-        return "M", "M"
+        return "M", "1mo"
     if isinstance(duration_mins, int) and duration_mins > 0:
         hours = duration_mins // 60
         if hours and hours % 24 == 0:
@@ -252,6 +272,38 @@ def _format_reset(
     if dt.date() == current.date():
         return dt.strftime("%H:%M")
     return dt.strftime("%-d %b")
+
+
+def _format_menu_reset(
+    window: QuotaWindow,
+    *,
+    now: datetime | None = None,
+) -> str | None:
+    if not window.reset_at:
+        return None
+    current = now or datetime.now().astimezone()
+    dt = datetime.fromtimestamp(window.reset_at).astimezone()
+    delta = dt - current
+    total_seconds = max(0, int(delta.total_seconds()))
+    if total_seconds < 60:
+        return "reset now"
+    total_minutes = total_seconds // 60
+    if total_minutes < 60:
+        return f"reset in {total_minutes}m"
+    if total_minutes < 5 * 60:
+        hours, minutes = divmod(total_minutes, 60)
+        if minutes:
+            return f"reset in {hours}h {minutes}m"
+        return f"reset in {hours}h"
+    if total_minutes < 24 * 60:
+        if dt.date() == current.date():
+            return f"reset today {dt.strftime('%H:%M')}"
+        return f"reset tomorrow {dt.strftime('%H:%M')}"
+    if total_minutes <= 7 * 24 * 60:
+        return f"reset {dt.strftime('%a %H:%M')}"
+    if dt.year == current.year:
+        return f"reset {dt.strftime('%b')} {dt.day}"
+    return f"reset {dt.strftime('%b')} {dt.day}, {dt.year}"
 
 
 def _cache_is_expired(snapshot: QuotaSnapshot, now: int | None = None) -> bool:

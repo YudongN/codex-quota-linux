@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import subprocess
 import threading
 
-from .app import QuotaState, fetch_state
+from .app import QuotaState, fetch_snapshot, fetch_state
 from .config import AppConfig, load_config
+from .notifications import notify_switch
 from .quota import (
-    account_line,
-    account_summary_line,
+    header_action_line,
+    header_line,
     indicator_label,
     last_updated_line,
+    menu_limit_line,
+    menu_meter_line,
     menu_window_line,
     status_name,
 )
@@ -40,31 +44,25 @@ def run_indicator(config: AppConfig) -> int:
     def rebuild_menu(quota: QuotaState) -> None:
         snapshot = quota.current
         menu = Gtk.Menu()
-        _append_label(menu, account_line(snapshot))
-        if snapshot.windows:
-            for window in snapshot.windows:
-                _append_label(menu, menu_window_line(window))
-        else:
-            _append_label(menu, "Quota unavailable")
-        _append_label(menu, last_updated_line(snapshot))
+        _append_current_account_section(menu, snapshot)
+        for standby in quota.standby:
+            _append_separator(menu)
+            _append_standby_account_section(
+                menu,
+                standby,
+                on_activate=lambda _item, alias=standby.alias: switch_async(alias),
+            )
         message = state.get("message")
         if isinstance(message, str) and message:
-            _append_label(menu, message)
-        if quota.standby:
             _append_separator(menu)
-            _append_label(menu, "Switch account")
-            _append_label(menu, account_summary_line(snapshot, current=True))
-            for standby in quota.standby:
-                item = Gtk.MenuItem(label=account_summary_line(standby))
-                item.connect(
-                    "activate",
-                    lambda _item, alias=standby.alias: switch_async(alias),
-                )
-                menu.append(item)
+            _append_label(menu, message)
         _append_separator(menu)
         refresh_item = Gtk.MenuItem(label="Refresh all")
         refresh_item.connect("activate", lambda _item: refresh_async())
         menu.append(refresh_item)
+        open_item = Gtk.MenuItem(label="Open config folder...")
+        open_item.connect("activate", lambda _item: open_config_folder())
+        menu.append(open_item)
         quit_item = Gtk.MenuItem(label="Quit")
         quit_item.connect("activate", lambda _item: Gtk.main_quit())
         menu.append(quit_item)
@@ -87,12 +85,28 @@ def run_indicator(config: AppConfig) -> int:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def refresh_active_async() -> None:
+        def worker() -> None:
+            current_config = state["config"]
+            assert isinstance(current_config, AppConfig)
+            current = fetch_snapshot(current_config)
+            quota = state.get("quota")
+            if isinstance(quota, QuotaState):
+                next_quota = QuotaState(current=current, standby=quota.standby)
+            else:
+                next_quota = fetch_state(current_config)
+            GLib.idle_add(apply_state, next_quota)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def refresh_standby_async() -> None:
+        refresh_async()
+
     def switch_async(alias: str) -> None:
         def apply_switch_success(new_config: AppConfig, quota: QuotaState) -> None:
             state["config"] = new_config
-            state["message"] = (
-                f"Switched to {alias}; restart running Codex apps if needed."
-            )
+            state["message"] = None
+            notify_switch(alias)
             apply_state(quota)
 
         def apply_switch_error(message: str) -> None:
@@ -114,14 +128,63 @@ def run_indicator(config: AppConfig) -> int:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def refresh_timer() -> bool:
-        refresh_async()
+    def active_refresh_timer() -> bool:
+        refresh_active_async()
         return True
 
+    def standby_refresh_timer() -> bool:
+        refresh_standby_async()
+        return True
+
+    def open_config_folder() -> None:
+        current_config = state["config"]
+        assert isinstance(current_config, AppConfig)
+        current_config.runtime_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            subprocess.Popen(
+                ["xdg-open", str(current_config.runtime_dir)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            state["message"] = f"Open config folder failed: {exc}"
+            current_quota = state.get("quota")
+            if isinstance(current_quota, QuotaState):
+                rebuild_menu(current_quota)
+
     apply_state(fetch_state(config))
-    GLib.timeout_add_seconds(config.refresh_interval_seconds, refresh_timer)
+    GLib.timeout_add_seconds(config.active_refresh_interval_seconds, active_refresh_timer)
+    GLib.timeout_add_seconds(config.standby_refresh_interval_seconds, standby_refresh_timer)
     Gtk.main()
     return 0
+
+
+def _append_current_account_section(menu, snapshot) -> None:
+    _append_label(menu, header_line(snapshot))
+    _append_label(menu, snapshot.email or "Unknown account")
+    if snapshot.windows:
+        for window in snapshot.windows:
+            _append_label(menu, menu_limit_line(window))
+            _append_label(menu, menu_meter_line(window))
+    else:
+        _append_label(menu, "Quota unavailable")
+    _append_label(menu, last_updated_line(snapshot))
+
+
+def _append_standby_account_section(menu, snapshot, on_activate) -> None:
+    import gi
+
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import Gtk
+
+    item = Gtk.MenuItem(label=header_action_line(snapshot, "Switch"))
+    item.connect("activate", on_activate)
+    menu.append(item)
+    if snapshot.windows:
+        for window in snapshot.windows:
+            _append_label(menu, menu_window_line(window))
+    else:
+        _append_label(menu, "Quota unavailable")
 
 
 def _append_label(menu, text: str):
