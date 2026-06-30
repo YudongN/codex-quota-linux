@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .accounts import account_slot_path
+from .auth_sync import sync_refreshed_auth
 from .config import AppConfig, save_config
 
 
@@ -40,12 +41,26 @@ def switch_account(
     lock_path = config.runtime_dir / "app.lock"
     with lock_path.open("w") as lock_file:
         fcntl.flock(lock_file, fcntl.LOCK_EX)
+        _sync_selected_slot_from_codex_home(config, target_auth)
         _replace_auth(source=slot_auth, target=target_auth)
         save_config(config, selected_alias=selected_alias)
         return SwitchResult(
             alias=selected_alias,
             auth_path=target_auth,
         )
+
+
+def _sync_selected_slot_from_codex_home(config: AppConfig, source_auth: Path) -> bool:
+    if not config.selected_alias:
+        return False
+    try:
+        selected_home = account_slot_path(config.accounts_dir, config.selected_alias)
+    except ValueError:
+        return False
+    selected_auth = selected_home / "auth.json"
+    if not source_auth.is_file() or not selected_auth.is_file():
+        return False
+    return sync_refreshed_auth(source=source_auth, target=selected_auth)
 
 
 def _replace_auth(*, source: Path, target: Path) -> None:

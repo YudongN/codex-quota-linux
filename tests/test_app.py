@@ -1,3 +1,5 @@
+import json
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import threading
@@ -11,7 +13,11 @@ from codex_quota.app import (
     fetch_state,
     load_cached_state,
 )
-from codex_quota.client import DirectQuotaAuthError, DirectQuotaTransientError
+from codex_quota.client import (
+    CodexClientError,
+    DirectQuotaAuthError,
+    DirectQuotaTransientError,
+)
 from codex_quota.config import AppConfig
 from codex_quota.quota import QuotaSnapshot, parse_rate_limits, save_cache
 
@@ -178,6 +184,101 @@ class AppStateTests(unittest.TestCase):
             self.assertEqual(snapshot.windows[0].left_percent, 68)
             self.assertIsNone(snapshot.error)
             self.assertEqual(client.call_args.kwargs["timeout_seconds"], 8.0)
+
+    def test_fetch_account_snapshot_copies_back_refreshed_app_server_auth(self):
+        with TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            auth_home = root / ".runtime" / "accounts" / "Work"
+            auth_home.mkdir(parents=True)
+            auth_path = auth_home / "auth.json"
+            _write_auth(auth_path, account_id="acct-work", marker="original")
+
+            with patch(
+                "codex_quota.app.DirectQuotaClient",
+                return_value=_FailingDirectClient(
+                    DirectQuotaAuthError("direct quota auth failed")
+                ),
+            ), patch(
+                "codex_quota.app.CodexAppServerClient",
+                side_effect=lambda **kwargs: _RefreshingFakeClient(
+                    marker="refreshed",
+                    **kwargs,
+                ),
+            ):
+                snapshot = _fetch_account_snapshot(
+                    alias="Work",
+                    auth_home=auth_home,
+                    cache_path=auth_home / "cache.json",
+                    runtime_dir=root / ".runtime",
+                    direct_max_attempts=3,
+                    direct_timeout_seconds=8,
+                )
+
+            self.assertEqual(snapshot.windows[0].left_percent, 68)
+            self.assertEqual(_auth_marker(auth_path), "refreshed")
+            self.assertEqual(_auth_mode(auth_path), "0o600")
+
+    def test_fetch_account_snapshot_does_not_copy_back_mismatched_auth(self):
+        with TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            auth_home = root / ".runtime" / "accounts" / "Work"
+            auth_home.mkdir(parents=True)
+            auth_path = auth_home / "auth.json"
+            _write_auth(auth_path, account_id="acct-work", marker="original")
+
+            with patch(
+                "codex_quota.app.DirectQuotaClient",
+                return_value=_FailingDirectClient(
+                    DirectQuotaAuthError("direct quota auth failed")
+                ),
+            ), patch(
+                "codex_quota.app.CodexAppServerClient",
+                side_effect=lambda **kwargs: _RefreshingFakeClient(
+                    account_id="acct-other",
+                    marker="refreshed",
+                    **kwargs,
+                ),
+            ):
+                snapshot = _fetch_account_snapshot(
+                    alias="Work",
+                    auth_home=auth_home,
+                    cache_path=auth_home / "cache.json",
+                    runtime_dir=root / ".runtime",
+                    direct_max_attempts=3,
+                    direct_timeout_seconds=8,
+                )
+
+            self.assertEqual(snapshot.windows[0].left_percent, 68)
+            self.assertEqual(_auth_marker(auth_path), "original")
+
+    def test_fetch_account_snapshot_does_not_copy_back_failed_app_server_auth(self):
+        with TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            auth_home = root / ".runtime" / "accounts" / "Work"
+            auth_home.mkdir(parents=True)
+            auth_path = auth_home / "auth.json"
+            _write_auth(auth_path, account_id="acct-work", marker="original")
+
+            with patch(
+                "codex_quota.app.DirectQuotaClient",
+                return_value=_FailingDirectClient(
+                    DirectQuotaAuthError("direct quota auth failed")
+                ),
+            ), patch(
+                "codex_quota.app.CodexAppServerClient",
+                side_effect=lambda **kwargs: _FailingRefreshingFakeClient(**kwargs),
+            ):
+                snapshot = _fetch_account_snapshot(
+                    alias="Work",
+                    auth_home=auth_home,
+                    cache_path=auth_home / "cache.json",
+                    runtime_dir=root / ".runtime",
+                    direct_max_attempts=3,
+                    direct_timeout_seconds=8,
+                )
+
+            self.assertTrue(snapshot.is_stale)
+            self.assertEqual(_auth_marker(auth_path), "original")
 
     def test_fetch_account_snapshot_schema_drift_repairs_with_app_server(self):
         with TemporaryDirectory() as tempdir:
@@ -366,6 +467,76 @@ class _PollutingFakeClient:
                 }
             }
         }
+
+
+class _RefreshingFakeClient:
+    def __init__(
+        self,
+        *,
+        codex_home,
+        timeout_seconds,
+        account_id="acct-work",
+        marker="refreshed",
+    ):
+        self.codex_home = codex_home
+        self.timeout_seconds = timeout_seconds
+        self.account_id = account_id
+        self.marker = marker
+
+    def read_rate_limits(self):
+        _write_auth(
+            self.codex_home / "auth.json",
+            account_id=self.account_id,
+            marker=self.marker,
+        )
+        return {
+            "rateLimits": {
+                "primary": {
+                    "usedPercent": 32,
+                    "windowDurationMins": 300,
+                }
+            }
+        }
+
+
+class _FailingRefreshingFakeClient:
+    def __init__(self, *, codex_home, timeout_seconds):
+        self.codex_home = codex_home
+        self.timeout_seconds = timeout_seconds
+
+    def read_rate_limits(self):
+        _write_auth(
+            self.codex_home / "auth.json",
+            account_id="acct-work",
+            marker="refreshed",
+        )
+        raise CodexClientError("app-server failed")
+
+
+def _write_auth(path, *, account_id, marker):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "marker": marker,
+                "tokens": {
+                    "account_id": account_id,
+                    "access_token": "dummy-access",
+                    "refresh_token": "dummy-refresh",
+                },
+            },
+            sort_keys=True,
+        )
+    )
+    os.chmod(path, 0o600)
+
+
+def _auth_marker(path):
+    return json.loads(path.read_text())["marker"]
+
+
+def _auth_mode(path):
+    return oct(path.stat().st_mode & 0o777)
 
 
 if __name__ == "__main__":

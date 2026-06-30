@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import fcntl
 import os
 import shutil
 import tempfile
@@ -10,6 +11,7 @@ from pathlib import Path
 
 from .accounts import AccountSlot, discover_account_slots
 from .auth_info import read_account_info
+from .auth_sync import sync_refreshed_auth
 from .client import (
     CodexAppServerClient,
     CodexClientError,
@@ -184,11 +186,16 @@ def _repair_account_snapshot(
                 codex_home=codex_home,
                 timeout_seconds=APP_SERVER_TIMEOUT_SECONDS,
             ).read_rate_limits()
-        snapshot = parse_rate_limits(
-            response,
-            alias=alias,
-            email=email,
-        )
+            snapshot = parse_rate_limits(
+                response,
+                alias=alias,
+                email=email,
+            )
+            _sync_refreshed_auth_with_lock(
+                source=codex_home / "auth.json",
+                target=auth_home / "auth.json",
+                runtime_dir=runtime_dir,
+            )
         save_cache(cache_path, snapshot)
         return snapshot
     except CodexClientError as exc:
@@ -198,6 +205,21 @@ def _repair_account_snapshot(
             error=fallback_error or str(exc),
             cache_path=cache_path,
         )
+
+
+def _sync_refreshed_auth_with_lock(
+    *,
+    source: Path,
+    target: Path,
+    runtime_dir: Path | None,
+) -> bool:
+    if runtime_dir is None:
+        return sync_refreshed_auth(source=source, target=target)
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = runtime_dir / "app.lock"
+    with lock_path.open("w") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        return sync_refreshed_auth(source=source, target=target)
 
 
 def _selected_slot(

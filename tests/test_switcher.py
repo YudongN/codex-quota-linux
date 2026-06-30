@@ -1,3 +1,4 @@
+import json
 import os
 import unittest
 from pathlib import Path
@@ -57,6 +58,71 @@ class SwitcherTests(unittest.TestCase):
             self.assertEqual((codex_home / "auth.json").read_text(), '{"account":"work"}')
             self.assertFalse((runtime / "backups").exists())
 
+    def test_switch_account_syncs_selected_slot_before_replacement(self):
+        with TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            runtime = root / ".runtime"
+            codex_home = root / "codex-home"
+            main_home = runtime / "accounts" / "Main"
+            work_home = runtime / "accounts" / "Work"
+            codex_home.mkdir()
+            main_home.mkdir(parents=True)
+            work_home.mkdir(parents=True)
+            _write_auth(
+                main_home / "auth.json",
+                account_id="acct-main",
+                marker="slot-original",
+            )
+            _write_auth(
+                codex_home / "auth.json",
+                account_id="acct-main",
+                marker="main-refreshed",
+            )
+            _write_auth(work_home / "auth.json", account_id="acct-work", marker="work")
+            config = AppConfig(
+                project_root=root,
+                runtime_dir=runtime,
+                selected_alias="Main",
+            )
+
+            switch_account(config, "Work", codex_home=codex_home)
+
+            self.assertEqual(_auth_marker(main_home / "auth.json"), "main-refreshed")
+            self.assertEqual(_auth_mode(main_home / "auth.json"), "0o600")
+            self.assertEqual(_auth_marker(codex_home / "auth.json"), "work")
+
+    def test_switch_account_does_not_sync_mismatched_selected_slot(self):
+        with TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            runtime = root / ".runtime"
+            codex_home = root / "codex-home"
+            main_home = runtime / "accounts" / "Main"
+            work_home = runtime / "accounts" / "Work"
+            codex_home.mkdir()
+            main_home.mkdir(parents=True)
+            work_home.mkdir(parents=True)
+            _write_auth(
+                main_home / "auth.json",
+                account_id="acct-main",
+                marker="slot-original",
+            )
+            _write_auth(
+                codex_home / "auth.json",
+                account_id="acct-other",
+                marker="main-refreshed",
+            )
+            _write_auth(work_home / "auth.json", account_id="acct-work", marker="work")
+            config = AppConfig(
+                project_root=root,
+                runtime_dir=runtime,
+                selected_alias="Main",
+            )
+
+            switch_account(config, "Work", codex_home=codex_home)
+
+            self.assertEqual(_auth_marker(main_home / "auth.json"), "slot-original")
+            self.assertEqual(_auth_marker(codex_home / "auth.json"), "work")
+
     def test_switch_account_requires_existing_slot_auth(self):
         with TemporaryDirectory() as tempdir:
             root = Path(tempdir)
@@ -64,6 +130,32 @@ class SwitcherTests(unittest.TestCase):
 
             with self.assertRaisesRegex(SwitchError, "does not have auth.json"):
                 switch_account(config, "Missing", codex_home=root / "codex-home")
+
+
+def _write_auth(path, *, account_id, marker):
+    path.write_text(
+        json.dumps(
+            {
+                "marker": marker,
+                "tokens": {
+                    "account_id": account_id,
+                    "access_token": "dummy-access",
+                    "refresh_token": "dummy-refresh",
+                },
+            },
+            sort_keys=True,
+        )
+    )
+    os.chmod(path, 0o600)
+
+
+def _auth_marker(path):
+    return json.loads(path.read_text())["marker"]
+
+
+def _auth_mode(path):
+    return oct(path.stat().st_mode & 0o777)
+
 
 if __name__ == "__main__":
     unittest.main()
