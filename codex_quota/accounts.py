@@ -7,7 +7,7 @@ from pathlib import Path
 @dataclass(frozen=True)
 class AccountSlot:
     alias: str
-    codex_home: Path
+    path: Path
 
 
 def account_slot_path(accounts_dir: Path, alias: str) -> Path:
@@ -31,5 +31,5 @@ def discover_account_slots(accounts_dir: Path) -> list[AccountSlot]:
             continue
         if not (path / "auth.json").is_file():
             continue
-        slots.append(AccountSlot(alias=path.name, codex_home=path))
+        slots.append(AccountSlot(alias=path.name, path=path))
     return slots

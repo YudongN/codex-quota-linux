@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 import threading
 
-from .app import QuotaState, fetch_snapshot, fetch_state
+from .app import QuotaState, fetch_snapshot, fetch_state, load_cached_state
 from .config import AppConfig, load_config
 from .notifications import notify_switch
 from .quota import (
@@ -156,7 +156,8 @@ def run_indicator(config: AppConfig) -> int:
             if isinstance(current_quota, QuotaState):
                 rebuild_menu(current_quota)
 
-    apply_state(fetch_state(config))
+    apply_state(load_cached_state(config))
+    refresh_async()
     GLib.timeout_add_seconds(config.active_refresh_interval_seconds, active_refresh_timer)
     GLib.timeout_add_seconds(config.standby_refresh_interval_seconds, standby_refresh_timer)
     Gtk.main()

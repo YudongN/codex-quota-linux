@@ -7,7 +7,6 @@ from .app import fetch_state
 from .auth_store import AddAccountError, add_account
 from .config import load_config
 from .indicator import run_indicator
-from .legacy import migrate_legacy_homes
 from .notifications import notify_switch
 from .quota import (
     header_action_line,
@@ -31,10 +30,6 @@ def main(argv: list[str] | None = None) -> int:
     add_parser.add_argument("alias", help="account alias, e.g. Personal")
     switch_parser = subparsers.add_parser("switch", help="soft-switch current Codex account")
     switch_parser.add_argument("alias", help="account alias, e.g. Work")
-    subparsers.add_parser(
-        "migrate-legacy-homes",
-        help="archive old full CODEX_HOME files under .runtime/accounts",
-    )
     args = parser.parse_args(argv)
 
     command = args.command or "run"
@@ -48,8 +43,6 @@ def main(argv: list[str] | None = None) -> int:
         return _add(args.alias)
     if command == "switch":
         return _switch(args.alias)
-    if command == "migrate-legacy-homes":
-        return _migrate_legacy_homes()
     parser.error(f"unknown command: {command}")
     return 2
 
@@ -124,22 +117,6 @@ def _switch(alias: str) -> int:
     notify_switch(result.alias)
     print("New Codex processes will use this account.")
     print("Codex Desktop / running app-server may need restart.")
-    return 0
-
-
-def _migrate_legacy_homes() -> int:
-    config = load_config()
-    report = migrate_legacy_homes(config.runtime_dir)
-    if not report.migrated_accounts:
-        print("No legacy CODEX_HOME files found.")
-        return 0
-    print(f"Archived legacy files: {report.archive_root}")
-    for alias in report.migrated_accounts:
-        print(f"- {alias}")
-    if report.conversation_candidates:
-        print("Conversation-state candidates were archived, not merged:")
-        for item in report.conversation_candidates:
-            print(f"- {item}")
     return 0
 
 

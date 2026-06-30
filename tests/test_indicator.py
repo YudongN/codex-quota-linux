@@ -23,6 +23,12 @@ class IndicatorTests(unittest.TestCase):
 
         self.assertNotIn("restart running Codex apps if needed", source)
 
+    def test_indicator_startup_renders_cache_before_live_refresh(self):
+        source = inspect.getsource(indicator.run_indicator)
+
+        self.assertIn("apply_state(load_cached_state(config))", source)
+        self.assertNotIn("apply_state(fetch_state(config))", source)
+
     def test_switch_then_notify_notifies_before_slow_refresh(self):
         calls: list[str] = []
 
