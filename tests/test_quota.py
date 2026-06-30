@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import unittest
 
 from codex_quota.quota import (
+    QuotaSchemaError,
     _format_reset,
     account_line,
     account_summary_line,
@@ -14,6 +15,7 @@ from codex_quota.quota import (
     menu_limit_line,
     menu_meter_line,
     menu_window_line,
+    parse_direct_usage,
     parse_rate_limits,
     progress_bar,
     save_cache,
@@ -22,6 +24,44 @@ from codex_quota.quota import (
 
 
 class QuotaParsingTests(unittest.TestCase):
+    def test_parses_direct_usage_windows(self):
+        snapshot = parse_direct_usage(
+            {
+                "plan_type": "plus",
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 32,
+                        "reset_at": 1782588600,
+                        "limit_window_seconds": 18000,
+                    },
+                    "secondary_window": {
+                        "used_percent": 57,
+                        "reset_at": 1782975600,
+                        "limit_window_seconds": 604800,
+                    },
+                },
+                "credits": {},
+            },
+            alias="Main",
+            email="user@example.com",
+            now=100,
+        )
+
+        self.assertEqual(snapshot.plan, "plus")
+        self.assertEqual(indicator_label(snapshot), "H68 · W43")
+        self.assertEqual(snapshot.windows[0].label, "5h")
+        self.assertEqual(snapshot.windows[0].reset_at, 1782588600)
+        self.assertEqual(snapshot.windows[1].label, "7d")
+
+    def test_direct_usage_missing_expected_fields_is_schema_drift(self):
+        with self.assertRaisesRegex(QuotaSchemaError, "Backend changed"):
+            parse_direct_usage(
+                {"plan_type": "plus", "rate_limit": {}},
+                alias="Main",
+                email=None,
+                now=100,
+            )
+
     def test_parses_codex_primary_and_secondary_as_left_percent(self):
         snapshot = parse_rate_limits(
             {

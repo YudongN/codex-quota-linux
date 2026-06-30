@@ -11,6 +11,7 @@ from codex_quota.app import (
     fetch_state,
     load_cached_state,
 )
+from codex_quota.client import DirectQuotaAuthError, DirectQuotaTransientError
 from codex_quota.config import AppConfig
 from codex_quota.quota import QuotaSnapshot, parse_rate_limits, save_cache
 
@@ -120,7 +121,35 @@ class AppStateTests(unittest.TestCase):
             self.assertEqual(state.current.windows[0].left_percent, 91)
             self.assertEqual([snapshot.alias for snapshot in state.standby], ["Personal"])
 
-    def test_fetch_account_snapshot_uses_short_app_server_timeout(self):
+    def test_fetch_account_snapshot_uses_direct_quota_before_app_server(self):
+        with TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            auth_home = root / "auth"
+            auth_home.mkdir()
+            (auth_home / "auth.json").write_text("{}")
+            direct_instance = _FakeDirectClient()
+
+            with patch(
+                "codex_quota.app.DirectQuotaClient",
+                return_value=direct_instance,
+            ) as direct_client, patch("codex_quota.app.CodexAppServerClient") as app_client:
+                snapshot = _fetch_account_snapshot(
+                    alias="Work",
+                    auth_home=auth_home,
+                    cache_path=auth_home / "cache.json",
+                    runtime_dir=root / ".runtime",
+                    direct_max_attempts=3,
+                    direct_timeout_seconds=8,
+                )
+
+            self.assertEqual(snapshot.windows[0].left_percent, 68)
+            self.assertEqual(snapshot.plan, "plus")
+            self.assertEqual(direct_instance.auth_home, auth_home)
+            self.assertEqual(direct_client.call_args.kwargs["max_attempts"], 3)
+            self.assertEqual(direct_client.call_args.kwargs["timeout_seconds"], 8)
+            app_client.assert_not_called()
+
+    def test_fetch_account_snapshot_auth_failure_repairs_with_app_server(self):
         with TemporaryDirectory() as tempdir:
             root = Path(tempdir)
             auth_home = root / "auth"
@@ -129,6 +158,11 @@ class AppStateTests(unittest.TestCase):
             client_instance = _FakeClient()
 
             with patch(
+                "codex_quota.app.DirectQuotaClient",
+                return_value=_FailingDirectClient(
+                    DirectQuotaAuthError("direct quota auth failed")
+                ),
+            ), patch(
                 "codex_quota.app.CodexAppServerClient",
                 return_value=client_instance,
             ) as client:
@@ -137,10 +171,84 @@ class AppStateTests(unittest.TestCase):
                     auth_home=auth_home,
                     cache_path=auth_home / "cache.json",
                     runtime_dir=root / ".runtime",
+                    direct_max_attempts=3,
+                    direct_timeout_seconds=8,
                 )
 
             self.assertEqual(snapshot.windows[0].left_percent, 68)
+            self.assertIsNone(snapshot.error)
             self.assertEqual(client.call_args.kwargs["timeout_seconds"], 8.0)
+
+    def test_fetch_account_snapshot_schema_drift_repairs_with_app_server(self):
+        with TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            auth_home = root / "auth"
+            auth_home.mkdir()
+            (auth_home / "auth.json").write_text("{}")
+
+            with patch(
+                "codex_quota.app.DirectQuotaClient",
+                return_value=_DirectPayloadClient({"rate_limit": {}}),
+            ), patch(
+                "codex_quota.app.CodexAppServerClient",
+                return_value=_FakeClient(used_percent=9),
+            ) as client:
+                snapshot = _fetch_account_snapshot(
+                    alias="Work",
+                    auth_home=auth_home,
+                    cache_path=auth_home / "cache.json",
+                    runtime_dir=root / ".runtime",
+                    direct_max_attempts=3,
+                    direct_timeout_seconds=8,
+                )
+
+            self.assertEqual(snapshot.windows[0].left_percent, 91)
+            self.assertIsNone(snapshot.error)
+            client.assert_called_once()
+
+    def test_fetch_account_snapshot_transient_direct_failure_uses_cache_only(self):
+        with TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            auth_home = root / "auth"
+            auth_home.mkdir()
+            (auth_home / "auth.json").write_text("{}")
+            cache_path = auth_home / "cache.json"
+            save_cache(
+                cache_path,
+                parse_rate_limits(
+                    {
+                        "rateLimits": {
+                            "primary": {
+                                "usedPercent": 20,
+                                "windowDurationMins": 300,
+                            }
+                        }
+                    },
+                    alias="Work",
+                    email="work@example.com",
+                    now=100,
+                ),
+            )
+
+            with patch(
+                "codex_quota.app.DirectQuotaClient",
+                return_value=_FailingDirectClient(
+                    DirectQuotaTransientError("quota request failed")
+                ),
+            ), patch("codex_quota.app.CodexAppServerClient") as app_client:
+                snapshot = _fetch_account_snapshot(
+                    alias="Work",
+                    auth_home=auth_home,
+                    cache_path=cache_path,
+                    runtime_dir=root / ".runtime",
+                    direct_max_attempts=3,
+                    direct_timeout_seconds=8,
+                )
+
+            self.assertTrue(snapshot.is_stale)
+            self.assertEqual(snapshot.windows[0].left_percent, 80)
+            self.assertEqual(snapshot.error, "quota request failed")
+            app_client.assert_not_called()
 
     def test_fetch_account_snapshot_keeps_app_server_state_out_of_account_slot(self):
         with TemporaryDirectory() as tempdir:
@@ -150,6 +258,11 @@ class AppStateTests(unittest.TestCase):
             (slot / "auth.json").write_text("{}")
 
             with patch(
+                "codex_quota.app.DirectQuotaClient",
+                return_value=_FailingDirectClient(
+                    DirectQuotaAuthError("direct quota auth failed")
+                ),
+            ), patch(
                 "codex_quota.app.CodexAppServerClient",
                 side_effect=lambda **kwargs: _PollutingFakeClient(**kwargs),
             ):
@@ -158,6 +271,8 @@ class AppStateTests(unittest.TestCase):
                     auth_home=slot,
                     cache_path=slot / "cache.json",
                     runtime_dir=root / ".runtime",
+                    direct_max_attempts=3,
+                    direct_timeout_seconds=8,
                 )
 
             self.assertEqual(snapshot.windows[0].left_percent, 68)
@@ -182,15 +297,55 @@ class AppStateTests(unittest.TestCase):
 
 
 class _FakeClient:
+    def __init__(self, used_percent=32):
+        self.used_percent = used_percent
+
     def read_rate_limits(self):
         return {
             "rateLimits": {
                 "primary": {
-                    "usedPercent": 32,
+                    "usedPercent": self.used_percent,
                     "windowDurationMins": 300,
                 }
             }
         }
+
+
+class _FakeDirectClient:
+    def __init__(self):
+        self.auth_home = None
+
+    def read_usage(self, auth_home):
+        self.auth_home = auth_home
+        return _direct_usage(32)
+
+
+class _DirectPayloadClient:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def read_usage(self, _auth_home):
+        return self.payload
+
+
+class _FailingDirectClient:
+    def __init__(self, error):
+        self.error = error
+
+    def read_usage(self, _auth_home):
+        raise self.error
+
+
+def _direct_usage(used_percent):
+    return {
+        "plan_type": "plus",
+        "rate_limit": {
+            "primary_window": {
+                "used_percent": used_percent,
+                "limit_window_seconds": 18000,
+            }
+        },
+    }
 
 
 class _PollutingFakeClient:

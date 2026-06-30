@@ -3,20 +3,104 @@ from __future__ import annotations
 import json
 import os
 import select
+import socket
 import subprocess
+import ssl
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+
+DIRECT_USAGE_ENDPOINT = "https://chatgpt.com/backend-api/wham/usage"
 
 
 class CodexClientError(RuntimeError):
     pass
 
 
+class DirectQuotaError(RuntimeError):
+    pass
+
+
+class DirectQuotaTransientError(DirectQuotaError):
+    pass
+
+
+class DirectQuotaAuthError(DirectQuotaError):
+    pass
+
+
+class DirectQuotaSchemaError(DirectQuotaError):
+    pass
+
+
 @dataclass(frozen=True)
 class RpcResult:
     result: dict[str, Any]
+
+
+class DirectQuotaClient:
+    def __init__(
+        self,
+        *,
+        endpoint: str = DIRECT_USAGE_ENDPOINT,
+        timeout_seconds: float = 8.0,
+        max_attempts: int = 3,
+        opener: Any = None,
+    ):
+        self.endpoint = endpoint
+        self.timeout_seconds = timeout_seconds
+        self.max_attempts = max(1, max_attempts)
+        self.opener = opener or urllib.request.urlopen
+
+    def read_usage(self, auth_home: Path) -> dict[str, Any]:
+        token = _read_access_token(auth_home / "auth.json")
+        last_error: DirectQuotaTransientError | None = None
+        for _attempt in range(self.max_attempts):
+            try:
+                return self._read_once(token)
+            except DirectQuotaTransientError as exc:
+                last_error = exc
+        raise last_error or DirectQuotaTransientError("quota request failed")
+
+    def _read_once(self, token: str) -> dict[str, Any]:
+        request = urllib.request.Request(
+            self.endpoint,
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+            method="GET",
+        )
+        try:
+            with self.opener(request, timeout=self.timeout_seconds) as response:
+                body = response.read()
+                status = getattr(response, "status", None)
+        except urllib.error.HTTPError as exc:
+            body = exc.read()
+            raise _direct_http_error(exc.code, body) from exc
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            socket.timeout,
+            ssl.SSLError,
+            ConnectionError,
+        ) as exc:
+            raise DirectQuotaTransientError("quota request failed") from exc
+        if isinstance(status, int) and status >= 400:
+            raise _direct_http_error(status, body)
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise DirectQuotaSchemaError("Backend changed") from exc
+        if not isinstance(payload, dict):
+            raise DirectQuotaSchemaError("Backend changed")
+        if _payload_looks_auth_failure(payload):
+            raise DirectQuotaAuthError("direct quota auth failed")
+        return payload
 
 
 class CodexAppServerClient:
@@ -107,6 +191,41 @@ def _initialize_params() -> dict[str, Any]:
         "clientInfo": {"name": "codex-quota-linux", "version": "0.1.0"},
         "capabilities": {},
     }
+
+
+def _read_access_token(auth_path: Path) -> str:
+    try:
+        data = json.loads(auth_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DirectQuotaAuthError("direct quota auth failed") from exc
+    if not isinstance(data, dict):
+        raise DirectQuotaAuthError("direct quota auth failed")
+    tokens = data.get("tokens")
+    access_token = tokens.get("access_token") if isinstance(tokens, dict) else None
+    if not isinstance(access_token, str) or not access_token:
+        raise DirectQuotaAuthError("direct quota auth failed")
+    return access_token
+
+
+def _direct_http_error(status: int, body: bytes) -> DirectQuotaError:
+    if status in {401, 403} or _body_looks_auth_failure(body):
+        return DirectQuotaAuthError("direct quota auth failed")
+    if status in {408, 429} or status >= 500:
+        return DirectQuotaTransientError("quota request failed")
+    return DirectQuotaSchemaError("Backend changed")
+
+
+def _body_looks_auth_failure(body: bytes) -> bool:
+    text = body.decode("utf-8", errors="ignore").lower()
+    return any(word in text for word in ("refresh", "token", "unauthorized", "auth"))
+
+
+def _payload_looks_auth_failure(payload: dict[str, Any]) -> bool:
+    for field in ("error", "message", "detail"):
+        value = payload.get(field)
+        if isinstance(value, str) and _body_looks_auth_failure(value.encode("utf-8")):
+            return True
+    return False
 
 
 def _loads_json_line(line: str) -> dict[str, Any]:

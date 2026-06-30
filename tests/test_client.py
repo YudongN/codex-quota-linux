@@ -1,12 +1,73 @@
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import textwrap
+import urllib.error
 import unittest
 from pathlib import Path
 
-from codex_quota.client import CodexAppServerClient, CodexClientError
+from codex_quota.client import (
+    CodexAppServerClient,
+    CodexClientError,
+    DirectQuotaClient,
+)
+
+
+class DirectQuotaClientTests(unittest.TestCase):
+    def test_reads_usage_with_slot_access_token(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            auth_home = Path(tempdir)
+            (auth_home / "auth.json").write_text(
+                '{"tokens":{"access_token":"test-access-token"}}'
+            )
+            calls = []
+
+            def opener(request, timeout):
+                calls.append((request, timeout))
+                return _FakeHttpResponse({"plan_type": "plus", "rate_limit": {}})
+
+            result = DirectQuotaClient(
+                endpoint="https://example.test/wham/usage",
+                timeout_seconds=8,
+                max_attempts=3,
+                opener=opener,
+            ).read_usage(auth_home)
+
+        self.assertEqual(result["plan_type"], "plus")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1], 8)
+        self.assertEqual(
+            calls[0][0].get_header("Authorization"),
+            "Bearer test-access-token",
+        )
+
+    def test_retries_transient_direct_errors(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            auth_home = Path(tempdir)
+            (auth_home / "auth.json").write_text(
+                '{"tokens":{"access_token":"test-access-token"}}'
+            )
+            attempts = 0
+
+            def opener(_request, timeout):
+                nonlocal attempts
+                del timeout
+                attempts += 1
+                if attempts < 3:
+                    raise urllib.error.URLError("TLS handshake failed")
+                return _FakeHttpResponse({"plan_type": "plus", "rate_limit": {}})
+
+            result = DirectQuotaClient(
+                endpoint="https://example.test/wham/usage",
+                timeout_seconds=8,
+                max_attempts=3,
+                opener=opener,
+            ).read_usage(auth_home)
+
+        self.assertEqual(result["plan_type"], "plus")
+        self.assertEqual(attempts, 3)
 
 
 class CodexAppServerClientTests(unittest.TestCase):
@@ -112,6 +173,22 @@ def _write_fake_server(source: str) -> Path:
 
 
 _TEMP_DIRS: list[tempfile.TemporaryDirectory[str]] = []
+
+
+class _FakeHttpResponse:
+    status = 200
+
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return None
+
+    def read(self):
+        return json.dumps(self.payload).encode("utf-8")
 
 
 if __name__ == "__main__":

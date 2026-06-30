@@ -12,6 +12,8 @@ class AppConfig:
     selected_alias: str = ""
     active_refresh_interval_seconds: int = 120
     standby_refresh_interval_seconds: int = 600
+    direct_max_attempts: int = 3
+    direct_timeout_seconds: int = 8
 
     @property
     def accounts_dir(self) -> Path:
@@ -40,6 +42,8 @@ def load_config(root: Path | None = None) -> AppConfig:
             values.get("standby_refresh_interval_seconds"),
             600,
         ),
+        direct_max_attempts=_int_value(values.get("direct_max_attempts"), 3),
+        direct_timeout_seconds=_int_value(values.get("direct_timeout_seconds"), 8),
     )
     save_config(config)
     return config
@@ -53,6 +57,8 @@ def save_config(config: AppConfig, *, selected_alias: str | None = None) -> None
         f"selected_alias = {json.dumps(alias)}\n"
         f"active_refresh_interval_seconds = {config.active_refresh_interval_seconds}\n"
         f"standby_refresh_interval_seconds = {config.standby_refresh_interval_seconds}\n"
+        f"direct_max_attempts = {config.direct_max_attempts}\n"
+        f"direct_timeout_seconds = {config.direct_timeout_seconds}\n"
     )
     temp_path = path.with_name(".config.toml.tmp")
     temp_path.write_text(text)

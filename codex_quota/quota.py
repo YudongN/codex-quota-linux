@@ -11,6 +11,10 @@ from typing import Any
 CACHE_EXPIRES_AFTER_SECONDS = 10 * 60
 
 
+class QuotaSchemaError(ValueError):
+    pass
+
+
 @dataclass(frozen=True)
 class QuotaWindow:
     key: str
@@ -51,6 +55,31 @@ def parse_rate_limits(
         plan=plan,
         windows=windows,
         updated_at=now or int(time.time()),
+    )
+
+
+def parse_direct_usage(
+    response: dict[str, Any],
+    *,
+    alias: str,
+    email: str | None,
+    now: int | None = None,
+) -> QuotaSnapshot:
+    root = _direct_usage_root(response)
+    rate_limit = root.get("rate_limit")
+    if not isinstance(rate_limit, dict):
+        raise QuotaSchemaError("Backend changed")
+    timestamp = now or int(time.time())
+    windows = _extract_direct_windows(rate_limit, now=timestamp)
+    plan = root.get("plan_type")
+    if not isinstance(plan, str):
+        plan = root.get("planType")
+    return QuotaSnapshot(
+        alias=alias,
+        email=email,
+        plan=plan if isinstance(plan, str) else None,
+        windows=windows,
+        updated_at=timestamp,
     )
 
 
@@ -241,6 +270,57 @@ def _extract_windows(snapshot: dict[str, Any]) -> list[QuotaWindow]:
                 )
             )
     return windows
+
+
+def _direct_usage_root(response: dict[str, Any]) -> dict[str, Any]:
+    usage = response.get("usage")
+    if isinstance(usage, dict):
+        return usage
+    return response
+
+
+def _extract_direct_windows(rate_limit: dict[str, Any], *, now: int) -> list[QuotaWindow]:
+    windows: list[QuotaWindow] = []
+    for field in ("primary_window", "secondary_window"):
+        raw = rate_limit.get(field)
+        if raw is None:
+            continue
+        if not isinstance(raw, dict):
+            raise QuotaSchemaError("Backend changed")
+        used = raw.get("used_percent")
+        duration_seconds = raw.get("limit_window_seconds")
+        if not isinstance(used, int | float) or not isinstance(
+            duration_seconds,
+            int | float,
+        ):
+            raise QuotaSchemaError("Backend changed")
+        key, label = _labels_for_duration(round(duration_seconds / 60))
+        windows.append(
+            QuotaWindow(
+                key=key,
+                label=label,
+                left_percent=_clamp_percent(round(100 - used)),
+                reset_at=_direct_reset_at(raw, now=now),
+            )
+        )
+    if not windows:
+        raise QuotaSchemaError("Backend changed")
+    return windows
+
+
+def _direct_reset_at(window: dict[str, Any], *, now: int) -> int | None:
+    reset_at = window.get("reset_at")
+    if isinstance(reset_at, int | float):
+        return int(reset_at)
+    if isinstance(reset_at, str):
+        try:
+            return int(datetime.fromisoformat(reset_at.replace("Z", "+00:00")).timestamp())
+        except ValueError:
+            return None
+    reset_after = window.get("reset_after_seconds")
+    if isinstance(reset_after, int | float):
+        return now + round(reset_after)
+    return None
 
 
 def _labels_for_duration(duration_mins: Any) -> tuple[str, str]:
