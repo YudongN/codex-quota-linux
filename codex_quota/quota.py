@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 
-CACHE_EXPIRES_AFTER_SECONDS = 10 * 60
+CACHE_EXPIRES_AFTER_SECONDS = 60 * 60
 
 
 class QuotaSchemaError(ValueError):
@@ -156,6 +156,36 @@ def menu_window_line(
     return f"{window.label} {window.left_percent}%{reset_text}"
 
 
+def current_account_menu_lines(
+    snapshot: QuotaSnapshot,
+    *,
+    now: datetime | None = None,
+    freshness_now: int | None = None,
+) -> list[str]:
+    lines = [f"✓ {header_line(snapshot)}", snapshot.email or "Unknown account"]
+    if snapshot.windows:
+        lines.extend(menu_window_line(window, now=now) for window in snapshot.windows)
+    else:
+        lines.append("Quota unavailable")
+    lines.append(freshness_line(snapshot, now=_freshness_now(now, freshness_now)))
+    return lines
+
+
+def standby_account_menu_lines(
+    snapshot: QuotaSnapshot,
+    *,
+    now: datetime | None = None,
+    freshness_now: int | None = None,
+) -> list[str]:
+    lines = [f"Switch to {header_line(snapshot)}"]
+    if snapshot.windows:
+        lines.extend(menu_window_line(window, now=now) for window in snapshot.windows)
+    else:
+        lines.append("Quota unavailable")
+    lines.append(freshness_line(snapshot, now=_freshness_now(now, freshness_now)))
+    return lines
+
+
 def header_line(snapshot: QuotaSnapshot) -> str:
     plan = f" · {snapshot.plan.title()}" if snapshot.plan else ""
     return f"{snapshot.alias}{plan}"
@@ -189,6 +219,21 @@ def last_updated_line(
     if snapshot.error and include_error:
         return f"Updated at {text} (stale: {snapshot.error})"
     return f"Updated at {text}"
+
+
+def freshness_line(snapshot: QuotaSnapshot, now: int | None = None) -> str:
+    actionable = _actionable_error_line(snapshot.error)
+    if actionable:
+        return actionable
+    if snapshot.updated_at <= 0:
+        return "Stale"
+    current = now if now is not None else int(time.time())
+    age_seconds = max(0, current - snapshot.updated_at)
+    if age_seconds < 60:
+        return "Updated right now"
+    if age_seconds < CACHE_EXPIRES_AFTER_SECONDS:
+        return f"Updated {age_seconds // 60}m ago"
+    return "Stale"
 
 
 def save_cache(path: Path, snapshot: QuotaSnapshot) -> None:
@@ -390,7 +435,38 @@ def _cache_is_expired(snapshot: QuotaSnapshot, now: int | None = None) -> bool:
     current = now or int(time.time())
     if snapshot.updated_at <= 0:
         return True
-    return current - snapshot.updated_at > CACHE_EXPIRES_AFTER_SECONDS
+    return current - snapshot.updated_at >= CACHE_EXPIRES_AFTER_SECONDS
+
+
+def _freshness_now(
+    reset_now: datetime | None,
+    freshness_now: int | None,
+) -> int | None:
+    if freshness_now is not None:
+        return freshness_now
+    if reset_now is not None:
+        return int(reset_now.timestamp())
+    return None
+
+
+def _actionable_error_line(error: str | None) -> str | None:
+    if not error:
+        return None
+    if "backend changed" in error.lower():
+        return "Backend changed"
+    normalized = error.lower()
+    if any(
+        needle in normalized
+        for needle in (
+            "auth",
+            "token",
+            "unauthorized",
+            "forbidden",
+            "no account selected",
+        )
+    ):
+        return "Auth needed"
+    return None
 
 
 def _status_window(windows: list[QuotaWindow]) -> QuotaWindow:

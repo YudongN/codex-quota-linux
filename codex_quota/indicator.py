@@ -7,13 +7,9 @@ from .app import QuotaState, fetch_snapshot, fetch_state, load_cached_state
 from .config import AppConfig, load_config
 from .notifications import notify_switch
 from .quota import (
-    header_action_line,
-    header_line,
+    current_account_menu_lines,
     indicator_label,
-    last_updated_line,
-    menu_limit_line,
-    menu_meter_line,
-    menu_window_line,
+    standby_account_menu_lines,
     status_name,
 )
 from .switcher import SwitchError, switch_account
@@ -45,13 +41,12 @@ def run_indicator(config: AppConfig) -> int:
         snapshot = quota.current
         menu = Gtk.Menu()
         _append_current_account_section(menu, snapshot)
-        for standby in quota.standby:
-            _append_separator(menu)
-            _append_standby_account_section(
-                menu,
-                standby,
-                on_activate=lambda _item, alias=standby.alias: switch_async(alias),
-            )
+        _append_separator(menu)
+        _append_switch_account_submenu(
+            menu,
+            quota.standby,
+            on_switch=switch_async,
+        )
         message = state.get("message")
         if isinstance(message, str) and message:
             _append_separator(menu)
@@ -140,6 +135,12 @@ def run_indicator(config: AppConfig) -> int:
         refresh_standby_async()
         return True
 
+    def menu_text_timer() -> bool:
+        current_quota = state.get("quota")
+        if isinstance(current_quota, QuotaState):
+            rebuild_menu(current_quota)
+        return True
+
     def open_config_folder() -> None:
         current_config = state["config"]
         assert isinstance(current_config, AppConfig)
@@ -158,6 +159,7 @@ def run_indicator(config: AppConfig) -> int:
 
     apply_state(load_cached_state(config))
     refresh_async()
+    GLib.timeout_add_seconds(60, menu_text_timer)
     GLib.timeout_add_seconds(config.active_refresh_interval_seconds, active_refresh_timer)
     GLib.timeout_add_seconds(config.standby_refresh_interval_seconds, standby_refresh_timer)
     Gtk.main()
@@ -192,31 +194,36 @@ def _reorder_quota_for_alias(quota: QuotaState, alias: str) -> QuotaState:
 
 
 def _append_current_account_section(menu, snapshot) -> None:
-    _append_label(menu, header_line(snapshot))
-    _append_label(menu, snapshot.email or "Unknown account")
-    if snapshot.windows:
-        for window in snapshot.windows:
-            _append_label(menu, menu_limit_line(window))
-            _append_label(menu, menu_meter_line(window))
-    else:
-        _append_label(menu, "Quota unavailable")
-    _append_label(menu, last_updated_line(snapshot))
+    for line in current_account_menu_lines(snapshot):
+        _append_label(menu, line)
 
 
-def _append_standby_account_section(menu, snapshot, on_activate) -> None:
+def _append_switch_account_submenu(menu, snapshots, on_switch) -> None:
     import gi
 
     gi.require_version("Gtk", "3.0")
     from gi.repository import Gtk
 
-    item = Gtk.MenuItem(label=header_action_line(snapshot, "Switch"))
-    item.connect("activate", on_activate)
+    item = Gtk.MenuItem(label="Switch account")
+    if not snapshots:
+        item.set_sensitive(False)
+        menu.append(item)
+        return
+    switch_menu = Gtk.Menu()
+    for index, snapshot in enumerate(snapshots):
+        if index:
+            _append_separator(switch_menu)
+        lines = standby_account_menu_lines(snapshot)
+        action_item = Gtk.MenuItem(label=lines[0])
+        action_item.connect(
+            "activate",
+            lambda _item, alias=snapshot.alias: on_switch(alias),
+        )
+        switch_menu.append(action_item)
+        for line in lines[1:]:
+            _append_label(switch_menu, line)
+    item.set_submenu(switch_menu)
     menu.append(item)
-    if snapshot.windows:
-        for window in snapshot.windows:
-            _append_label(menu, menu_window_line(window))
-    else:
-        _append_label(menu, "Quota unavailable")
 
 
 def _append_label(menu, text: str):

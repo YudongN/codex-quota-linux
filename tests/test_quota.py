@@ -5,10 +5,13 @@ import unittest
 
 from codex_quota.quota import (
     QuotaSchemaError,
+    QuotaSnapshot,
     _format_reset,
     account_line,
     account_summary_line,
+    current_account_menu_lines,
     failed_snapshot,
+    freshness_line,
     header_action_line,
     indicator_label,
     last_updated_line,
@@ -19,6 +22,7 @@ from codex_quota.quota import (
     parse_rate_limits,
     progress_bar,
     save_cache,
+    standby_account_menu_lines,
     status_name,
 )
 
@@ -387,7 +391,8 @@ class QuotaParsingTests(unittest.TestCase):
         expected_time = datetime.fromtimestamp(100).astimezone().strftime("%H:%M:%S")
         self.assertEqual(last_updated_line(stale, now=120), f"Updated at {expected_time}")
         self.assertEqual(status_name(stale, now=120), "warning")
-        self.assertEqual(status_name(stale, now=701), "stale")
+        self.assertEqual(status_name(stale, now=701), "warning")
+        self.assertEqual(status_name(stale, now=3700), "stale")
         self.assertIn(
             "stale: usage endpoint failed",
             last_updated_line(stale, now=120, include_error=True),
@@ -403,6 +408,144 @@ class QuotaParsingTests(unittest.TestCase):
 
         self.assertEqual(status_name(snapshot), "unknown")
         self.assertEqual(last_updated_line(snapshot), "Updated at never")
+
+    def test_freshness_line_uses_short_relative_states(self):
+        snapshot = parse_rate_limits(
+            {
+                "rateLimits": {
+                    "primary": {
+                        "usedPercent": 32,
+                        "windowDurationMins": 300,
+                    }
+                }
+            },
+            alias="Main",
+            email=None,
+            now=1_000,
+        )
+
+        self.assertEqual(freshness_line(snapshot, now=1_020), "Updated right now")
+        self.assertEqual(freshness_line(snapshot, now=1_120), "Updated 2m ago")
+        self.assertEqual(freshness_line(snapshot, now=4_540), "Updated 59m ago")
+        self.assertEqual(freshness_line(snapshot, now=4_600), "Stale")
+
+    def test_freshness_line_maps_actionable_errors_to_short_labels(self):
+        cached = QuotaSnapshot(
+            alias="Work",
+            email="work@example.com",
+            plan="plus",
+            windows=[],
+            updated_at=1_000,
+            error="direct quota auth failed",
+        )
+        changed = QuotaSnapshot(
+            alias="Work",
+            email="work@example.com",
+            plan="plus",
+            windows=[],
+            updated_at=1_000,
+            error="Backend changed",
+        )
+
+        self.assertEqual(freshness_line(cached, now=1_020), "Auth needed")
+        self.assertEqual(freshness_line(changed, now=1_020), "Backend changed")
+
+    def test_freshness_line_does_not_treat_initial_cache_miss_as_auth_needed(self):
+        snapshot = QuotaSnapshot(
+            alias="Work",
+            email=None,
+            plan=None,
+            windows=[],
+            updated_at=0,
+            error="not refreshed yet",
+        )
+
+        self.assertEqual(freshness_line(snapshot, now=1_020), "Stale")
+
+    def test_freshness_line_hides_transient_error_when_cache_exists(self):
+        cached = QuotaSnapshot(
+            alias="Work",
+            email="work@example.com",
+            plan="plus",
+            windows=[
+                parse_rate_limits(
+                    {
+                        "rateLimits": {
+                            "primary": {
+                                "usedPercent": 32,
+                                "windowDurationMins": 300,
+                            }
+                        }
+                    },
+                    alias="Work",
+                    email="work@example.com",
+                    now=1_000,
+                ).windows[0]
+            ],
+            updated_at=1_000,
+            error="quota request failed",
+        )
+
+        text = freshness_line(cached, now=1_120)
+
+        self.assertEqual(text, "Updated 2m ago")
+        self.assertNotIn("Network issue", text)
+        self.assertNotIn("quota request failed", text)
+
+    def test_current_account_menu_lines_use_compact_window_style(self):
+        now = datetime.now().astimezone().replace(
+            hour=14, minute=8, second=0, microsecond=0
+        )
+        snapshot = parse_rate_limits(
+            {
+                "rateLimits": {
+                    "planType": "plus",
+                    "primary": {
+                        "usedPercent": 100,
+                        "windowDurationMins": 300,
+                        "resetsAt": int((now + timedelta(hours=4, minutes=15)).timestamp()),
+                    },
+                }
+            },
+            alias="Outlook",
+            email="outlook@example.com",
+            now=int(now.timestamp()),
+        )
+
+        lines = current_account_menu_lines(
+            snapshot,
+            now=now,
+            freshness_now=int(now.timestamp()) + 20,
+        )
+
+        self.assertEqual(lines[0], "✓ Outlook · Plus")
+        self.assertEqual(lines[1], "outlook@example.com")
+        self.assertIn("5h 0% · reset in 4h 15m", lines)
+        self.assertIn("Updated right now", lines)
+        self.assertFalse(any("limit" in line for line in lines))
+        self.assertFalse(any("█" in line or "░" in line for line in lines))
+
+    def test_standby_account_menu_lines_start_with_switch_action(self):
+        snapshot = parse_rate_limits(
+            {
+                "rateLimits": {
+                    "planType": "plus",
+                    "primary": {
+                        "usedPercent": 35,
+                        "windowDurationMins": 300,
+                    },
+                }
+            },
+            alias="Gmail",
+            email=None,
+            now=1_000,
+        )
+
+        lines = standby_account_menu_lines(snapshot, freshness_now=1_120)
+
+        self.assertEqual(lines[0], "Switch to Gmail · Plus")
+        self.assertIn("5h 65%", lines)
+        self.assertIn("Updated 2m ago", lines)
 
 
 if __name__ == "__main__":

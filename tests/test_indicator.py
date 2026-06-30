@@ -29,6 +29,26 @@ class IndicatorTests(unittest.TestCase):
         self.assertIn("apply_state(load_cached_state(config))", source)
         self.assertNotIn("apply_state(fetch_state(config))", source)
 
+    def test_standby_accounts_are_rendered_inside_switch_submenu(self):
+        source = inspect.getsource(indicator._append_switch_account_submenu)
+
+        self.assertIn('Gtk.MenuItem(label="Switch account")', source)
+        self.assertIn("set_submenu", source)
+        self.assertIn("standby_account_menu_lines", source)
+        self.assertIn("_append_separator(switch_menu)", source)
+
+    def test_minute_menu_text_timer_does_not_refresh_quota(self):
+        source = inspect.getsource(indicator.run_indicator)
+        timer_start = source.index("def menu_text_timer")
+        timer_end = source.index("def open_config_folder")
+        timer_source = source[timer_start:timer_end]
+
+        self.assertIn("GLib.timeout_add_seconds(60, menu_text_timer)", source)
+        self.assertIn("rebuild_menu(current_quota)", timer_source)
+        self.assertNotIn("refresh_async()", timer_source)
+        self.assertNotIn("fetch_state", timer_source)
+        self.assertNotIn("fetch_snapshot", timer_source)
+
     def test_switch_then_notify_notifies_before_slow_refresh(self):
         calls: list[str] = []
 
