@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from .activation import ActivationError, activate_window
 from .app import fetch_state
 from .auth_store import AddAccountError, add_account
 from .config import load_config
@@ -30,6 +31,33 @@ def main(argv: list[str] | None = None) -> int:
     add_parser.add_argument("alias", help="account alias, e.g. Personal")
     switch_parser = subparsers.add_parser("switch", help="soft-switch current Codex account")
     switch_parser.add_argument("alias", help="account alias, e.g. Work")
+    activate_parser = subparsers.add_parser(
+        "activate-window",
+        help="manually activate Codex rolling quota windows",
+    )
+    activate_parser.add_argument(
+        "--all",
+        action="store_true",
+        dest="all_accounts",
+        help="activate all account slots",
+    )
+    activate_parser.add_argument(
+        "--alias",
+        action="append",
+        default=[],
+        help="activate a specific account alias; repeat for multiple accounts",
+    )
+    activate_parser.add_argument(
+        "--timeout",
+        type=int,
+        default=None,
+        help="per-account Codex command timeout in seconds",
+    )
+    activate_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="show accounts that would be activated without changing auth",
+    )
     args = parser.parse_args(argv)
 
     command = args.command or "run"
@@ -43,6 +71,13 @@ def main(argv: list[str] | None = None) -> int:
         return _add(args.alias)
     if command == "switch":
         return _switch(args.alias)
+    if command == "activate-window":
+        return _activate_window(
+            all_accounts=args.all_accounts,
+            aliases=args.alias,
+            timeout_seconds=args.timeout,
+            dry_run=args.dry_run,
+        )
     parser.error(f"unknown command: {command}")
     return 2
 
@@ -118,6 +153,30 @@ def _switch(alias: str) -> int:
     print("New Codex processes will use this account.")
     print("Codex Desktop / running app-server may need restart.")
     return 0
+
+
+def _activate_window(
+    *,
+    all_accounts: bool,
+    aliases: list[str],
+    timeout_seconds: int | None,
+    dry_run: bool,
+) -> int:
+    config = load_config()
+    try:
+        results = activate_window(
+            config,
+            all_accounts=all_accounts,
+            aliases=aliases,
+            timeout_seconds=timeout_seconds,
+            dry_run=dry_run,
+        )
+    except (ActivationError, ValueError) as exc:
+        print(f"Activate window failed: {exc}", file=sys.stderr)
+        return 1
+    for result in results:
+        print(f"{result.alias}: {result.status}")
+    return 0 if all(result.status in {"success", "dry-run"} for result in results) else 1
 
 
 def _print_snapshot(snapshot) -> None:

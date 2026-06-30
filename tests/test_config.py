@@ -17,13 +17,15 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.standby_refresh_interval_seconds, 600)
             self.assertEqual(config.direct_max_attempts, 3)
             self.assertEqual(config.direct_timeout_seconds, 8)
+            self.assertEqual(config.activate_timeout_seconds, 90)
             self.assertEqual(
                 (root / ".runtime" / "config.toml").read_text(),
                 'selected_alias = ""\n'
                 "active_refresh_interval_seconds = 120\n"
                 "standby_refresh_interval_seconds = 600\n"
                 "direct_max_attempts = 3\n"
-                "direct_timeout_seconds = 8\n",
+                "direct_timeout_seconds = 8\n"
+                "activate_timeout_seconds = 90\n",
             )
 
     def test_load_config_migrates_old_current_alias_without_main_default(self):
@@ -42,13 +44,15 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.standby_refresh_interval_seconds, 600)
             self.assertEqual(config.direct_max_attempts, 3)
             self.assertEqual(config.direct_timeout_seconds, 8)
+            self.assertEqual(config.activate_timeout_seconds, 90)
             self.assertEqual(
                 (runtime / "config.toml").read_text(),
                 'selected_alias = "Outlook"\n'
                 "active_refresh_interval_seconds = 120\n"
                 "standby_refresh_interval_seconds = 600\n"
                 "direct_max_attempts = 3\n"
-                "direct_timeout_seconds = 8\n",
+                "direct_timeout_seconds = 8\n"
+                "activate_timeout_seconds = 90\n",
             )
 
     def test_save_config_writes_only_current_keys(self):
@@ -62,6 +66,7 @@ class ConfigTests(unittest.TestCase):
                 standby_refresh_interval_seconds=600,
                 direct_max_attempts=4,
                 direct_timeout_seconds=9,
+                activate_timeout_seconds=12,
             )
 
             save_config(config, selected_alias="Work")
@@ -72,7 +77,8 @@ class ConfigTests(unittest.TestCase):
                 "active_refresh_interval_seconds = 120\n"
                 "standby_refresh_interval_seconds = 600\n"
                 "direct_max_attempts = 4\n"
-                "direct_timeout_seconds = 9\n",
+                "direct_timeout_seconds = 9\n"
+                "activate_timeout_seconds = 12\n",
             )
 
 
