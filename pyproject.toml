@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codex-quota-linux"
+version = "0.1.0"
+description = "Minimal Linux AppIndicator for monitoring and switching Codex account quota."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Yudong" }]
+keywords = ["codex", "linux", "appindicator", "quota", "tray"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: X11 Applications :: GTK",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Utilities",
+]
+dependencies = []
+
+[project.scripts]
+codex-quota = "codex_quota.cli:main"
+
+[tool.setuptools]
+packages = ["codex_quota"]
