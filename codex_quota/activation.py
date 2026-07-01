@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ class ActivationError(RuntimeError):
 class ActivationResult:
     alias: str
     status: str
+    tokens_used: int | None = None
 
 
 Runner = Callable[[list[str], int], subprocess.CompletedProcess[str]]
@@ -111,23 +113,37 @@ def _activate_slot(
         return ActivationResult(alias=slot.alias, status="timeout")
     except Exception:
         return ActivationResult(alias=slot.alias, status="failed")
+    tokens_used = _parse_tokens_used(completed)
     if completed.returncode != 0:
-        return ActivationResult(alias=slot.alias, status="failed")
+        return ActivationResult(
+            alias=slot.alias,
+            status="failed",
+            tokens_used=tokens_used,
+        )
     sync_refreshed_auth(source=target_auth, target=slot_auth)
-    return ActivationResult(alias=slot.alias, status="success")
+    return ActivationResult(
+        alias=slot.alias,
+        status="success",
+        tokens_used=tokens_used,
+    )
 
 
-def _codex_activation_command(project_root: Path) -> list[str]:
+def _codex_activation_command(_project_root: Path) -> list[str]:
     return [
         "codex",
         "exec",
         "--ephemeral",
+        "--ignore-user-config",
         "--ignore-rules",
         "--skip-git-repo-check",
+        "-m",
+        "gpt-5.4-mini",
+        "-c",
+        'model_reasoning_effort="low"',
         "-s",
         "read-only",
         "-C",
-        str(project_root),
+        tempfile.gettempdir(),
         ACTIVATION_PROMPT,
     ]
 
@@ -143,6 +159,14 @@ def _run_codex_exec(
         stderr=subprocess.PIPE,
         text=True,
     )
+
+
+def _parse_tokens_used(completed: subprocess.CompletedProcess[str]) -> int | None:
+    text = "\n".join(part for part in (completed.stdout, completed.stderr) if part)
+    match = re.search(r"tokens used\s*:?\s*([0-9][0-9,]*)", text, re.IGNORECASE)
+    if match is None:
+        return None
+    return int(match.group(1).replace(",", ""))
 
 
 @dataclass(frozen=True)

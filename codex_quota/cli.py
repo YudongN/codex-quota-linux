@@ -175,8 +175,15 @@ def _activate_window(
         print(f"Activate window failed: {exc}", file=sys.stderr)
         return 1
     for result in results:
-        print(f"{result.alias}: {result.status}")
+        print(_activation_result_line(result))
     return 0 if all(result.status in {"success", "dry-run"} for result in results) else 1
+
+
+def _activation_result_line(result) -> str:
+    line = f"{result.alias}: {result.status}"
+    if result.tokens_used is not None:
+        line += f" (tokens used: {result.tokens_used:,})"
+    return line
 
 
 def _print_snapshot(snapshot) -> None:

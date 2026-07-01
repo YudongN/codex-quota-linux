@@ -15,11 +15,16 @@ class ActivationTests(unittest.TestCase):
         command = _codex_activation_command(Path("/tmp/project"))
 
         self.assertNotIn("--ask-for-approval", command)
+        self.assertIn("--ignore-user-config", command)
         self.assertIn("--ephemeral", command)
         self.assertIn("--ignore-rules", command)
         self.assertIn("--skip-git-repo-check", command)
+        self.assertIn("gpt-5.4-mini", command)
+        self.assertIn('model_reasoning_effort="low"', command)
         self.assertIn("-s", command)
         self.assertIn("read-only", command)
+        self.assertIn("-C", command)
+        self.assertIn("/tmp", command)
 
     def test_dry_run_selects_all_slots_without_writing_or_running(self):
         with TemporaryDirectory() as tempdir:
@@ -64,7 +69,12 @@ class ActivationTests(unittest.TestCase):
 
             def runner(command, timeout):
                 calls.append((command, timeout, _auth_marker(codex_home / "auth.json")))
-                return subprocess.CompletedProcess(command, 0, stdout="OK\n", stderr="")
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout="OK.\ntokens used\n8,091\n",
+                    stderr="",
+                )
 
             results = activate_window(
                 config,
@@ -76,6 +86,7 @@ class ActivationTests(unittest.TestCase):
             )
 
             self.assertEqual([result.status for result in results], ["success", "success"])
+            self.assertEqual([result.tokens_used for result in results], [8091, 8091])
             self.assertEqual([call[2] for call in calls], ["backup", "work"])
             self.assertTrue(all(call[1] == 12 for call in calls))
             self.assertEqual(_auth_marker(codex_home / "auth.json"), "main")

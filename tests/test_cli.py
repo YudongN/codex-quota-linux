@@ -28,7 +28,9 @@ class CliTests(unittest.TestCase):
 
             with patch("codex_quota.cli.load_config", return_value=config), patch(
                 "codex_quota.cli.activate_window",
-                return_value=[ActivationResult(alias="Work", status="dry-run")],
+                return_value=[
+                    ActivationResult(alias="Work", status="success", tokens_used=8091)
+                ],
             ) as activate:
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
@@ -39,7 +41,6 @@ class CliTests(unittest.TestCase):
                             "Work",
                             "--timeout",
                             "7",
-                            "--dry-run",
                         ]
                     )
 
@@ -47,9 +48,9 @@ class CliTests(unittest.TestCase):
         activate.assert_called_once()
         self.assertEqual(activate.call_args.kwargs["aliases"], ["Work"])
         self.assertFalse(activate.call_args.kwargs["all_accounts"])
-        self.assertTrue(activate.call_args.kwargs["dry_run"])
+        self.assertFalse(activate.call_args.kwargs["dry_run"])
         self.assertEqual(activate.call_args.kwargs["timeout_seconds"], 7)
-        self.assertIn("Work: dry-run", stdout.getvalue())
+        self.assertIn("Work: success (tokens used: 8,091)", stdout.getvalue())
 
 
 if __name__ == "__main__":
