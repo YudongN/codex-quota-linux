@@ -3,9 +3,10 @@ from __future__ import annotations
 import subprocess
 import threading
 
+from .activation import ActivationError, activate_window
 from .app import QuotaState, fetch_snapshot, fetch_state, load_cached_state
 from .config import AppConfig, load_config
-from .notifications import notify_switch
+from .notifications import notify_activation_results, notify_switch
 from .quota import (
     current_account_menu_lines,
     indicator_label,
@@ -55,6 +56,9 @@ def run_indicator(config: AppConfig) -> int:
         refresh_item = Gtk.MenuItem(label="Refresh all")
         refresh_item.connect("activate", lambda _item: refresh_async())
         menu.append(refresh_item)
+        activate_item = Gtk.MenuItem(label="Activate all")
+        activate_item.connect("activate", lambda _item: activate_all_async())
+        menu.append(activate_item)
         open_item = Gtk.MenuItem(label="Open config folder...")
         open_item.connect("activate", lambda _item: open_config_folder())
         menu.append(open_item)
@@ -127,6 +131,29 @@ def run_indicator(config: AppConfig) -> int:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def activate_all_async() -> None:
+        def apply_activate_success(quota: QuotaState) -> None:
+            state["message"] = None
+            apply_state(quota)
+
+        def apply_activate_error(message: str) -> None:
+            state["message"] = message
+            current_quota = state.get("quota")
+            if isinstance(current_quota, QuotaState):
+                rebuild_menu(current_quota)
+
+        def worker() -> None:
+            current_config = state["config"]
+            assert isinstance(current_config, AppConfig)
+            try:
+                _activate_all_then_notify(current_config)
+                quota = fetch_state(current_config)
+                GLib.idle_add(apply_activate_success, quota)
+            except (ActivationError, ValueError) as exc:
+                GLib.idle_add(apply_activate_error, f"Activate all failed: {exc}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def active_refresh_timer() -> bool:
         refresh_active_async()
         return True
@@ -178,6 +205,17 @@ def _switch_then_notify(
     new_config = load()
     notify(alias)
     return new_config
+
+
+def _activate_all_then_notify(
+    config: AppConfig,
+    *,
+    activate=activate_window,
+    notify=notify_activation_results,
+):
+    results = activate(config, all_accounts=True, aliases=[])
+    notify(results)
+    return results
 
 
 def _reorder_quota_for_alias(quota: QuotaState, alias: str) -> QuotaState:

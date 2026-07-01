@@ -6,7 +6,13 @@ import unittest
 from codex_quota import indicator
 from codex_quota.app import QuotaState
 from codex_quota.config import AppConfig
-from codex_quota.indicator import _icon_for_status, _reorder_quota_for_alias, _switch_then_notify
+from codex_quota.activation import ActivationResult
+from codex_quota.indicator import (
+    _activate_all_then_notify,
+    _icon_for_status,
+    _reorder_quota_for_alias,
+    _switch_then_notify,
+)
 from codex_quota.quota import QuotaSnapshot
 
 
@@ -28,6 +34,13 @@ class IndicatorTests(unittest.TestCase):
 
         self.assertIn("apply_state(load_cached_state(config))", source)
         self.assertNotIn("apply_state(fetch_state(config))", source)
+
+    def test_activate_all_menu_item_is_below_refresh_all(self):
+        source = inspect.getsource(indicator.run_indicator)
+
+        refresh_index = source.index('Gtk.MenuItem(label="Refresh all")')
+        activate_index = source.index('Gtk.MenuItem(label="Activate all")')
+        self.assertLess(refresh_index, activate_index)
 
     def test_standby_accounts_are_rendered_inside_switch_submenu(self):
         source = inspect.getsource(indicator._append_switch_account_submenu)
@@ -76,6 +89,30 @@ class IndicatorTests(unittest.TestCase):
             calls.append("fetch_state")
 
         self.assertEqual(calls, ["switch:Work", "load", "notify:Work", "fetch_state"])
+
+    def test_activate_all_then_notify_activates_all_accounts_before_notify(self):
+        calls: list[str] = []
+        results = [ActivationResult(alias="Work", status="success", tokens_used=8091)]
+
+        with TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            config = AppConfig(project_root=root, runtime_dir=root / ".runtime")
+
+            def activate(config, *, all_accounts, aliases):
+                calls.append(f"activate:{all_accounts}:{aliases}")
+                return results
+
+            def notify(results):
+                calls.append(f"notify:{results[0].alias}:{results[0].tokens_used}")
+
+            actual = _activate_all_then_notify(
+                config,
+                activate=activate,
+                notify=notify,
+            )
+
+        self.assertEqual(actual, results)
+        self.assertEqual(calls, ["activate:True:[]", "notify:Work:8091"])
 
     def test_reorder_quota_for_alias_uses_cached_standby_before_refresh(self):
         personal = QuotaSnapshot(
