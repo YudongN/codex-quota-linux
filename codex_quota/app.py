@@ -198,7 +198,7 @@ def _repair_account_snapshot(
             )
         save_cache(cache_path, snapshot)
         return snapshot
-    except CodexClientError as exc:
+    except (CodexClientError, OSError) as exc:
         return failed_snapshot(
             alias=alias,
             email=email,
@@ -247,24 +247,33 @@ class _temporary_codex_home:
         if self.runtime_dir is not None:
             tmp_parent = self.runtime_dir / "tmp" / "app-server"
             tmp_parent.mkdir(parents=True, exist_ok=True)
-        home = Path(tempfile.mkdtemp(prefix="codex-home-", dir=tmp_parent))
         with _TEMP_HOME_LOCK:
+            home = Path(tempfile.mkdtemp(prefix="codex-home-", dir=tmp_parent))
             _ACTIVE_TEMP_HOMES.add(home)
         self.home = home
         source_auth = self.auth_home / "auth.json"
         target_auth = home / "auth.json"
-        shutil.copy2(source_auth, target_auth)
-        os.chmod(target_auth, 0o600)
-        return home
+        try:
+            shutil.copy2(source_auth, target_auth)
+            os.chmod(target_auth, 0o600)
+            return home
+        except BaseException:
+            self._cleanup_home()
+            raise
 
     def __exit__(self, exc_type, exc, tb) -> None:
+        self._cleanup_home()
+
+    def _cleanup_home(self) -> None:
         if self.home is None:
             return
+        home = self.home
         try:
-            shutil.rmtree(self.home, ignore_errors=True)
+            shutil.rmtree(home, ignore_errors=True)
         finally:
             with _TEMP_HOME_LOCK:
-                _ACTIVE_TEMP_HOMES.discard(self.home)
+                _ACTIVE_TEMP_HOMES.discard(home)
+            self.home = None
             if self.runtime_dir is not None:
                 _prune_temporary_codex_homes(self.runtime_dir)
 

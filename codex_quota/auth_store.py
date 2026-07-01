@@ -36,6 +36,7 @@ def add_account(
 
     had_auth = target_auth.exists()
     previous_auth = target_auth.read_bytes() if had_auth else None
+    primary_error: BaseException | None = None
     try:
         exit_code = subprocess.call(login_command or ["codex", "login"])
         if exit_code != 0:
@@ -54,8 +55,15 @@ def add_account(
             alias=selected_alias,
             auth_path=slot_auth,
         )
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
-        _restore_auth(target_auth, previous_auth)
+        try:
+            _restore_auth(target_auth, previous_auth)
+        except OSError:
+            if primary_error is None:
+                raise
 
 
 def _restore_auth(auth_path: Path, previous_auth: bytes | None) -> None:

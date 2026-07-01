@@ -11,6 +11,7 @@ from codex_quota.indicator import (
     _activate_all_then_notify,
     _icon_for_status,
     _reorder_quota_for_alias,
+    _run_background_action,
     _switch_then_notify,
 )
 from codex_quota.quota import QuotaSnapshot
@@ -61,6 +62,24 @@ class IndicatorTests(unittest.TestCase):
         self.assertNotIn("refresh_async()", timer_source)
         self.assertNotIn("fetch_state", timer_source)
         self.assertNotIn("fetch_snapshot", timer_source)
+
+    def test_indicator_workers_are_started_with_exception_guard(self):
+        source = inspect.getsource(indicator.run_indicator)
+
+        self.assertIn("_start_background_worker", source)
+        self.assertNotIn("threading.Thread(target=worker", source)
+
+    def test_background_action_routes_unexpected_exception_to_handler(self):
+        errors: list[Exception] = []
+
+        def worker() -> None:
+            raise RuntimeError("boom")
+
+        _run_background_action(worker, errors.append)
+
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], RuntimeError)
+        self.assertEqual(str(errors[0]), "boom")
 
     def test_switch_then_notify_notifies_before_slow_refresh(self):
         calls: list[str] = []

@@ -3,6 +3,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import textwrap
 import unittest
+from unittest.mock import patch
 
 from codex_quota.auth_store import AddAccountError, add_account
 from codex_quota.config import AppConfig
@@ -106,6 +107,28 @@ class AuthStoreTests(unittest.TestCase):
 
             self.assertEqual(auth_path.read_text(), '{"account":"old"}')
             self.assertFalse((runtime / "accounts" / "Personal" / "auth.json").exists())
+
+    def test_add_account_preserves_login_error_when_restore_fails(self):
+        with TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            runtime = root / ".runtime"
+            codex_home = root / "codex-home"
+            codex_home.mkdir()
+            (codex_home / "auth.json").write_text('{"account":"old"}')
+            login_script = _write_login_script(root, "import sys\nsys.exit(7)\n")
+            config = AppConfig(project_root=root, runtime_dir=runtime)
+
+            with patch(
+                "codex_quota.auth_store._restore_auth",
+                side_effect=OSError("restore failed"),
+            ):
+                with self.assertRaisesRegex(AddAccountError, "codex login failed"):
+                    add_account(
+                        config,
+                        "Personal",
+                        codex_home=codex_home,
+                        login_command=["python3", str(login_script)],
+                    )
 
 
 def _write_login_script(root: Path, source: str) -> Path:

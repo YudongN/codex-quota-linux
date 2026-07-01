@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import subprocess
 import threading
 
@@ -75,6 +76,15 @@ def run_indicator(config: AppConfig) -> int:
         indicator.set_icon_full(_icon_for_status(status_name(snapshot)), "Codex quota")
         rebuild_menu(quota)
 
+    def apply_worker_error(message: str) -> None:
+        state["message"] = message
+        current_quota = state.get("quota")
+        if isinstance(current_quota, QuotaState):
+            rebuild_menu(current_quota)
+
+    def worker_error(prefix: str) -> Callable[[Exception], None]:
+        return lambda exc: GLib.idle_add(apply_worker_error, f"{prefix} failed: {exc}")
+
     def refresh_async() -> None:
         def worker() -> None:
             current_config = state["config"]
@@ -82,7 +92,7 @@ def run_indicator(config: AppConfig) -> int:
             quota = fetch_state(current_config)
             GLib.idle_add(apply_state, quota)
 
-        threading.Thread(target=worker, daemon=True).start()
+        _start_background_worker(worker, worker_error("Refresh"))
 
     def refresh_active_async() -> None:
         def worker() -> None:
@@ -96,7 +106,7 @@ def run_indicator(config: AppConfig) -> int:
                 next_quota = fetch_state(current_config)
             GLib.idle_add(apply_state, next_quota)
 
-        threading.Thread(target=worker, daemon=True).start()
+        _start_background_worker(worker, worker_error("Refresh"))
 
     def refresh_standby_async() -> None:
         refresh_async()
@@ -129,7 +139,7 @@ def run_indicator(config: AppConfig) -> int:
             except (SwitchError, ValueError) as exc:
                 GLib.idle_add(apply_switch_error, f"Switch failed: {exc}")
 
-        threading.Thread(target=worker, daemon=True).start()
+        _start_background_worker(worker, worker_error("Switch"))
 
     def activate_all_async() -> None:
         def apply_activate_success(quota: QuotaState) -> None:
@@ -152,7 +162,7 @@ def run_indicator(config: AppConfig) -> int:
             except (ActivationError, ValueError) as exc:
                 GLib.idle_add(apply_activate_error, f"Activate all failed: {exc}")
 
-        threading.Thread(target=worker, daemon=True).start()
+        _start_background_worker(worker, worker_error("Activate all"))
 
     def active_refresh_timer() -> bool:
         refresh_active_async()
@@ -216,6 +226,26 @@ def _activate_all_then_notify(
     results = activate(config, all_accounts=True, aliases=[])
     notify(results)
     return results
+
+
+def _start_background_worker(
+    worker: Callable[[], None],
+    on_error: Callable[[Exception], None],
+) -> None:
+    threading.Thread(
+        target=lambda: _run_background_action(worker, on_error),
+        daemon=True,
+    ).start()
+
+
+def _run_background_action(
+    worker: Callable[[], None],
+    on_error: Callable[[Exception], None],
+) -> None:
+    try:
+        worker()
+    except Exception as exc:
+        on_error(exc)
 
 
 def _reorder_quota_for_alias(quota: QuotaState, alias: str) -> QuotaState:

@@ -139,7 +139,9 @@ def menu_limit_line(
     *,
     now: datetime | None = None,
 ) -> str:
-    return f"{window.label} limit · {_format_menu_reset(window, now=now)}"
+    reset = _format_menu_reset(window, now=now)
+    reset_text = f" · {reset}" if reset else ""
+    return f"{window.label} limit{reset_text}"
 
 
 def menu_meter_line(window: QuotaWindow) -> str:

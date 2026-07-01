@@ -6,6 +6,7 @@ import unittest
 from codex_quota.quota import (
     QuotaSchemaError,
     QuotaSnapshot,
+    QuotaWindow,
     _format_reset,
     account_line,
     account_summary_line,
@@ -321,6 +322,11 @@ class QuotaParsingTests(unittest.TestCase):
 
         self.assertEqual(menu_limit_line(same_year, now=now), "5h limit · reset Jul 8")
         self.assertEqual(menu_limit_line(next_year, now=now), "5h limit · reset Jan 3, 2027")
+
+    def test_menu_limit_line_omits_missing_reset_text(self):
+        window = QuotaWindow(key="H", label="5h", left_percent=42)
+
+        self.assertEqual(menu_limit_line(window), "5h limit")
 
     def test_header_action_line_adds_switch_action(self):
         snapshot = parse_rate_limits(

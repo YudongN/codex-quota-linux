@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import tempfile
 from tempfile import TemporaryDirectory
 import threading
 import time
@@ -8,8 +9,11 @@ import unittest
 from unittest.mock import patch
 
 from codex_quota.app import (
+    _ACTIVE_TEMP_HOMES,
+    _TEMP_HOME_LOCK,
     _fetch_account_snapshot,
     _prune_temporary_codex_homes,
+    _temporary_codex_home,
     fetch_state,
     load_cached_state,
 )
@@ -351,6 +355,34 @@ class AppStateTests(unittest.TestCase):
             self.assertEqual(snapshot.error, "quota request failed")
             app_client.assert_not_called()
 
+    def test_fetch_account_snapshot_reports_app_server_start_failure_as_stale(self):
+        with TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            auth_home = root / "auth"
+            auth_home.mkdir()
+            (auth_home / "auth.json").write_text("{}")
+
+            with patch(
+                "codex_quota.app.DirectQuotaClient",
+                return_value=_FailingDirectClient(
+                    DirectQuotaAuthError("direct quota auth failed")
+                ),
+            ), patch(
+                "codex_quota.app.CodexAppServerClient",
+                side_effect=FileNotFoundError("codex"),
+            ):
+                snapshot = _fetch_account_snapshot(
+                    alias="Work",
+                    auth_home=auth_home,
+                    cache_path=auth_home / "cache.json",
+                    runtime_dir=root / ".runtime",
+                    direct_max_attempts=3,
+                    direct_timeout_seconds=8,
+                )
+
+            self.assertTrue(snapshot.is_stale)
+            self.assertEqual(snapshot.error, "direct quota auth failed")
+
     def test_fetch_account_snapshot_keeps_app_server_state_out_of_account_slot(self):
         with TemporaryDirectory() as tempdir:
             root = Path(tempdir)
@@ -383,6 +415,52 @@ class AppStateTests(unittest.TestCase):
             self.assertFalse((slot / "state_5.sqlite").exists())
             tmp_root = root / ".runtime" / "tmp" / "app-server"
             self.assertEqual(list(tmp_root.glob("codex-home-*")), [])
+
+    def test_temporary_codex_home_survives_concurrent_prune_during_creation(self):
+        with TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            runtime = root / ".runtime"
+            auth_home = root / "auth"
+            auth_home.mkdir()
+            (auth_home / "auth.json").write_text("{}")
+            real_mkdtemp = tempfile.mkdtemp
+            prune_threads: list[threading.Thread] = []
+
+            def racing_mkdtemp(*args, **kwargs):
+                name = real_mkdtemp(*args, **kwargs)
+                thread = threading.Thread(
+                    target=lambda: _prune_temporary_codex_homes(runtime)
+                )
+                prune_threads.append(thread)
+                thread.start()
+                time.sleep(0.05)
+                return name
+
+            with patch("codex_quota.app.tempfile.mkdtemp", side_effect=racing_mkdtemp):
+                with _temporary_codex_home(auth_home, runtime) as home:
+                    for thread in prune_threads:
+                        thread.join(timeout=1)
+                    self.assertTrue((home / "auth.json").is_file())
+
+    def test_temporary_codex_home_cleans_up_when_auth_copy_fails(self):
+        with TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            runtime = root / ".runtime"
+            auth_home = root / "auth"
+            auth_home.mkdir()
+            (auth_home / "auth.json").write_text("{}")
+
+            with patch("codex_quota.app.shutil.copy2", side_effect=OSError("copy failed")):
+                with self.assertRaisesRegex(OSError, "copy failed"):
+                    with _temporary_codex_home(auth_home, runtime):
+                        pass
+
+            tmp_root = runtime / "tmp" / "app-server"
+            self.assertEqual(list(tmp_root.glob("codex-home-*")), [])
+            with _TEMP_HOME_LOCK:
+                self.assertFalse(
+                    any(path.parent == tmp_root for path in _ACTIVE_TEMP_HOMES)
+                )
 
     def test_prune_temporary_codex_homes_removes_stale_auth_copies(self):
         with TemporaryDirectory() as tempdir:

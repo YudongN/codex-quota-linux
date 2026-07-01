@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,7 +28,8 @@ def load_config(root: Path | None = None) -> AppConfig:
     runtime_dir = root / ".runtime"
     config_path = runtime_dir / "config.toml"
     values: dict[str, object] = {}
-    if config_path.exists():
+    config_exists = config_path.exists()
+    if config_exists:
         values = _read_simple_config(config_path)
     alias = values.get("selected_alias")
     if not isinstance(alias, str):
@@ -47,7 +50,8 @@ def load_config(root: Path | None = None) -> AppConfig:
         direct_timeout_seconds=_int_value(values.get("direct_timeout_seconds"), 8),
         activate_timeout_seconds=_int_value(values.get("activate_timeout_seconds"), 90),
     )
-    save_config(config)
+    if _config_needs_save(config_exists=config_exists, values=values):
+        save_config(config)
     return config
 
 
@@ -63,9 +67,32 @@ def save_config(config: AppConfig, *, selected_alias: str | None = None) -> None
         f"direct_timeout_seconds = {config.direct_timeout_seconds}\n"
         f"activate_timeout_seconds = {config.activate_timeout_seconds}\n"
     )
-    temp_path = path.with_name(".config.toml.tmp")
-    temp_path.write_text(text)
-    temp_path.replace(path)
+    fd, temp_name = tempfile.mkstemp(prefix=".config.toml.tmp-", dir=path.parent)
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(text)
+        temp_path.replace(path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+def _config_needs_save(*, config_exists: bool, values: dict[str, object]) -> bool:
+    if not config_exists:
+        return True
+    if not isinstance(values.get("selected_alias"), str):
+        return True
+    for key in (
+        "active_refresh_interval_seconds",
+        "standby_refresh_interval_seconds",
+        "direct_max_attempts",
+        "direct_timeout_seconds",
+        "activate_timeout_seconds",
+    ):
+        if not isinstance(values.get(key), int) or values[key] <= 0:
+            return True
+    return False
 
 
 def _read_simple_config(path: Path) -> dict[str, object]:
