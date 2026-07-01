@@ -6,10 +6,21 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from codex_quota.activation import activate_window
+from codex_quota.activation import _codex_activation_command
 from codex_quota.config import AppConfig
 
 
 class ActivationTests(unittest.TestCase):
+    def test_activation_command_uses_supported_exec_flags(self):
+        command = _codex_activation_command(Path("/tmp/project"))
+
+        self.assertNotIn("--ask-for-approval", command)
+        self.assertIn("--ephemeral", command)
+        self.assertIn("--ignore-rules", command)
+        self.assertIn("--skip-git-repo-check", command)
+        self.assertIn("-s", command)
+        self.assertIn("read-only", command)
+
     def test_dry_run_selects_all_slots_without_writing_or_running(self):
         with TemporaryDirectory() as tempdir:
             root = Path(tempdir)

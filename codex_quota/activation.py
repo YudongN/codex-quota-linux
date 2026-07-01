@@ -124,8 +124,6 @@ def _codex_activation_command(project_root: Path) -> list[str]:
         "--ephemeral",
         "--ignore-rules",
         "--skip-git-repo-check",
-        "--ask-for-approval",
-        "never",
         "-s",
         "read-only",
         "-C",
