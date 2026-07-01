@@ -4,10 +4,19 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from codex_quota.auth_sync import sync_refreshed_auth
+from codex_quota.auth_sync import sync_refreshed_auth, write_auth_bytes
 
 
 class AuthSyncTests(unittest.TestCase):
+    def test_write_auth_bytes_creates_private_auth_file(self):
+        with TemporaryDirectory() as tempdir:
+            target = Path(tempdir) / "nested" / "auth.json"
+
+            write_auth_bytes(target, b'{"account":"work"}')
+
+            self.assertEqual(target.read_bytes(), b'{"account":"work"}')
+            self.assertEqual(oct(target.stat().st_mode & 0o777), "0o600")
+
     def test_sync_refreshed_auth_requires_source_token_fields(self):
         for omitted_field in ("access_token", "refresh_token"):
             with self.subTest(omitted_field=omitted_field):

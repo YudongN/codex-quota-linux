@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import fcntl
-import os
 import re
 import subprocess
 import tempfile
@@ -10,7 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 from .accounts import AccountSlot, account_slot_path, discover_account_slots
-from .auth_sync import sync_refreshed_auth
+from .auth_sync import sync_refreshed_auth, write_auth_bytes
 from .config import AppConfig
 
 
@@ -105,7 +104,7 @@ def _activate_slot(
     runner: Runner,
 ) -> ActivationResult:
     slot_auth = slot.path / "auth.json"
-    _write_auth_bytes(target_auth, slot_auth.read_bytes())
+    write_auth_bytes(target_auth, slot_auth.read_bytes())
     command = _codex_activation_command(config.project_root)
     try:
         completed = runner(command, timeout_seconds)
@@ -184,24 +183,9 @@ class _AuthBackup:
     def restore(self, auth_path: Path) -> None:
         if self.existed:
             assert self.payload is not None
-            _write_auth_bytes(auth_path, self.payload)
+            write_auth_bytes(auth_path, self.payload)
             return
         try:
             auth_path.unlink()
         except FileNotFoundError:
             pass
-
-
-def _write_auth_bytes(target: Path, payload: bytes) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_name = tempfile.mkstemp(prefix=f".{target.name}.tmp-", dir=target.parent)
-    temp_path = Path(temp_name)
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(payload)
-        os.chmod(temp_path, 0o600)
-        os.replace(temp_path, target)
-        os.chmod(target, 0o600)
-    finally:
-        if temp_path.exists():
-            temp_path.unlink()

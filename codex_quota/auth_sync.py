@@ -33,7 +33,7 @@ def sync_refreshed_auth(*, source: Path, target: Path) -> bool:
         return False
 
     try:
-        _atomic_write_auth(target, source_bytes)
+        write_auth_bytes(target, source_bytes)
     except OSError:
         return False
     return True
@@ -55,7 +55,8 @@ def _token_value(payload: dict[str, Any], field: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _atomic_write_auth(target: Path, payload: bytes) -> None:
+def write_auth_bytes(target: Path, payload: bytes) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(
         prefix=f".{target.name}.tmp-",
         dir=target.parent,
