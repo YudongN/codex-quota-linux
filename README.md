@@ -11,6 +11,7 @@ without notice, and is not guaranteed to be maintained promptly.
 - Shows current account 5h and weekly quota in the Linux top bar.
 - Monitors multiple saved Codex account quotas.
 - Soft-switches the local Codex auth file between account slots.
+- Shows reset credits in the tray menu and CLI.
 - Sends a tiny Codex request to activate 5h rolling windows for saved accounts.
 - Exposes common actions from the tray menu: switch account, refresh all,
   activate all, open config folder, and quit.
@@ -47,6 +48,8 @@ Run from a source checkout:
 ./codex-quota run
 ```
 
+`run` is also the default command when no subcommand is provided.
+
 Switch the active Codex account:
 
 ```bash
@@ -68,8 +71,45 @@ Activate all saved accounts:
 ./codex-quota activate-window --all
 ```
 
+Check reset credits for the selected account:
+
+```bash
+./codex-quota check-reset-credits
+```
+
+Check every saved account:
+
+```bash
+./codex-quota check-reset-credits --all
+```
+
+Check specific accounts:
+
+```bash
+./codex-quota check-reset-credits --alias Personal --alias Work
+```
+
 The tray menu exposes the same daily actions: switch account, refresh all,
 activate all, open the config folder, and quit.
+
+## Configuration
+
+Configuration is stored in `.runtime/config.toml` and is created on first run.
+
+```toml
+selected_alias = ""
+quota_active_refresh_interval_seconds = 120
+quota_standby_refresh_interval_seconds = 600
+direct_max_attempts = 3
+direct_timeout_seconds = 8
+activate_timeout_seconds = 90
+reset_credits_refresh_interval_seconds = 86400
+```
+
+On startup, the tray shows cached values first, then refreshes account quota and
+reset credits in the background. `Refresh all` and `check-reset-credits` also
+force a reset credit refresh; later background refreshes respect
+`reset_credits_refresh_interval_seconds`.
 
 ## Runtime Files
 
@@ -78,6 +118,8 @@ Project-local runtime lives in `.runtime/` and is git-ignored.
 - `.runtime/config.toml`: selected account and refresh intervals.
 - `.runtime/accounts/<Alias>/auth.json`: stored account credential.
 - `.runtime/accounts/<Alias>/cache.json`: last quota snapshot.
+- `.runtime/accounts/<Alias>/reset_credits_cache.json`: last reset credits
+  snapshot.
 
 Do not commit `.runtime/`. It contains account credentials and local state. If
 you publish this project, use `git` tracked files only; do not upload a zip of
