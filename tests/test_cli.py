@@ -2,6 +2,7 @@ import contextlib
 import io
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -52,6 +53,46 @@ class CliTests(unittest.TestCase):
         self.assertFalse(activate.call_args.kwargs["dry_run"])
         self.assertEqual(activate.call_args.kwargs["timeout_seconds"], 7)
         self.assertIn("Work: success (tokens used: 8,091)", stdout.getvalue())
+
+    def test_add_cli_does_not_print_auth_path(self):
+        with TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            config = AppConfig(project_root=root, runtime_dir=root / ".runtime")
+            auth_path = root / "secret" / "auth.json"
+
+            with patch("codex_quota.cli.load_config", return_value=config), patch(
+                "codex_quota.cli.add_account",
+                return_value=SimpleNamespace(alias="Work", auth_path=auth_path),
+            ):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    result = cli.main(["add", "Work"])
+
+        output = stdout.getvalue()
+        self.assertEqual(result, 0)
+        self.assertIn("Added account Work", output)
+        self.assertNotIn(str(auth_path), output)
+        self.assertNotIn(str(root), output)
+
+    def test_switch_cli_does_not_print_auth_path(self):
+        with TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            config = AppConfig(project_root=root, runtime_dir=root / ".runtime")
+            auth_path = root / "secret" / "auth.json"
+
+            with patch("codex_quota.cli.load_config", return_value=config), patch(
+                "codex_quota.cli.switch_account",
+                return_value=SimpleNamespace(alias="Work", auth_path=auth_path),
+            ), patch("codex_quota.cli.notify_switch"):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    result = cli.main(["switch", "Work"])
+
+        output = stdout.getvalue()
+        self.assertEqual(result, 0)
+        self.assertIn("Switched to Work", output)
+        self.assertNotIn(str(auth_path), output)
+        self.assertNotIn(str(root), output)
 
     def test_check_reset_credits_cli_forwards_selection(self):
         with TemporaryDirectory() as tempdir:

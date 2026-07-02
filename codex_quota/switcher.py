@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import fcntl
-import os
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
 from .accounts import account_slot_path
-from .auth_sync import sync_refreshed_auth
+from .auth_sync import sync_refreshed_auth, write_auth_bytes
 from .config import AppConfig, save_config
 
 
@@ -64,12 +62,4 @@ def _sync_selected_slot_from_codex_home(config: AppConfig, source_auth: Path) ->
 
 
 def _replace_auth(*, source: Path, target: Path) -> None:
-    temp_path = target.with_name(f".{target.name}.tmp-{os.getpid()}")
-    try:
-        shutil.copy2(source, temp_path)
-        os.chmod(temp_path, 0o600)
-        os.replace(temp_path, target)
-        os.chmod(target, 0o600)
-    finally:
-        if temp_path.exists():
-            temp_path.unlink()
+    write_auth_bytes(target, source.read_bytes())

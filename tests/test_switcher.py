@@ -125,6 +125,26 @@ class SwitcherTests(unittest.TestCase):
             self.assertEqual(_auth_marker(main_home / "auth.json"), "slot-original")
             self.assertEqual(_auth_marker(codex_home / "auth.json"), "work")
 
+    def test_switch_account_ignores_preexisting_fixed_temp_symlink(self):
+        with TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            runtime = root / ".runtime"
+            codex_home = root / "codex-home"
+            codex_home.mkdir()
+            outside = root / "outside.txt"
+            outside.write_text("do not touch")
+            (codex_home / f".auth.json.tmp-{os.getpid()}").symlink_to(outside)
+            work_home = runtime / "accounts" / "Work"
+            work_home.mkdir(parents=True)
+            (work_home / "auth.json").write_text('{"account":"work"}')
+            config = AppConfig(project_root=root, runtime_dir=runtime)
+
+            switch_account(config, "Work", codex_home=codex_home)
+
+            self.assertEqual(outside.read_text(), "do not touch")
+            self.assertFalse((codex_home / "auth.json").is_symlink())
+            self.assertEqual((codex_home / "auth.json").read_text(), '{"account":"work"}')
+
     def test_switch_account_requires_existing_slot_auth(self):
         with TemporaryDirectory() as tempdir:
             root = Path(tempdir)

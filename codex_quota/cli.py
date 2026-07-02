@@ -157,8 +157,8 @@ def _add(alias: str) -> int:
         print(f"Add account failed: {exc}", file=sys.stderr)
         return 1
     print(f"Added account {result.alias}")
-    print(f"Stored auth: {result.auth_path}")
-    print("Restored original ~/.codex/auth.json")
+    print("Stored account auth in the local runtime.")
+    print("Restored original Codex auth.")
     return 0
 
 
@@ -170,7 +170,6 @@ def _switch(alias: str) -> int:
         print(f"Switch failed: {exc}", file=sys.stderr)
         return 1
     print(f"Switched to {result.alias}")
-    print(f"Auth: {result.auth_path}")
     notify_switch(result.alias)
     print("New Codex processes will use this account.")
     print("Codex Desktop / running app-server may need restart.")
