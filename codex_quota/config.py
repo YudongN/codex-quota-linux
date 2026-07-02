@@ -12,8 +12,8 @@ class AppConfig:
     project_root: Path
     runtime_dir: Path
     selected_alias: str = ""
-    active_refresh_interval_seconds: int = 120
-    standby_refresh_interval_seconds: int = 600
+    quota_active_refresh_interval_seconds: int = 120
+    quota_standby_refresh_interval_seconds: int = 600
     direct_max_attempts: int = 3
     direct_timeout_seconds: int = 8
     activate_timeout_seconds: int = 90
@@ -39,12 +39,16 @@ def load_config(root: Path | None = None) -> AppConfig:
         project_root=root,
         runtime_dir=runtime_dir,
         selected_alias=alias if isinstance(alias, str) else "",
-        active_refresh_interval_seconds=_int_value(
-            values.get("active_refresh_interval_seconds"),
+        quota_active_refresh_interval_seconds=_int_config_value(
+            values,
+            "quota_active_refresh_interval_seconds",
+            "active_refresh_interval_seconds",
             120,
         ),
-        standby_refresh_interval_seconds=_int_value(
-            values.get("standby_refresh_interval_seconds"),
+        quota_standby_refresh_interval_seconds=_int_config_value(
+            values,
+            "quota_standby_refresh_interval_seconds",
+            "standby_refresh_interval_seconds",
             600,
         ),
         direct_max_attempts=_int_value(values.get("direct_max_attempts"), 3),
@@ -66,8 +70,10 @@ def save_config(config: AppConfig, *, selected_alias: str | None = None) -> None
     alias = selected_alias if selected_alias is not None else config.selected_alias
     text = (
         f"selected_alias = {json.dumps(alias)}\n"
-        f"active_refresh_interval_seconds = {config.active_refresh_interval_seconds}\n"
-        f"standby_refresh_interval_seconds = {config.standby_refresh_interval_seconds}\n"
+        f"quota_active_refresh_interval_seconds = "
+        f"{config.quota_active_refresh_interval_seconds}\n"
+        f"quota_standby_refresh_interval_seconds = "
+        f"{config.quota_standby_refresh_interval_seconds}\n"
         f"direct_max_attempts = {config.direct_max_attempts}\n"
         f"direct_timeout_seconds = {config.direct_timeout_seconds}\n"
         f"activate_timeout_seconds = {config.activate_timeout_seconds}\n"
@@ -91,8 +97,8 @@ def _config_needs_save(*, config_exists: bool, values: dict[str, object]) -> boo
     if not isinstance(values.get("selected_alias"), str):
         return True
     for key in (
-        "active_refresh_interval_seconds",
-        "standby_refresh_interval_seconds",
+        "quota_active_refresh_interval_seconds",
+        "quota_standby_refresh_interval_seconds",
         "direct_max_attempts",
         "direct_timeout_seconds",
         "activate_timeout_seconds",
@@ -122,3 +128,15 @@ def _read_simple_config(path: Path) -> dict[str, object]:
 
 def _int_value(value: object, default: int) -> int:
     return value if isinstance(value, int) and value > 0 else default
+
+
+def _int_config_value(
+    values: dict[str, object],
+    key: str,
+    legacy_key: str,
+    default: int,
+) -> int:
+    value = values.get(key)
+    if isinstance(value, int) and value > 0:
+        return value
+    return _int_value(values.get(legacy_key), default)

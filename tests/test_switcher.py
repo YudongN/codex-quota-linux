@@ -24,8 +24,8 @@ class SwitcherTests(unittest.TestCase):
                 project_root=root,
                 runtime_dir=runtime,
                 selected_alias="Main",
-                active_refresh_interval_seconds=120,
-                standby_refresh_interval_seconds=600,
+                quota_active_refresh_interval_seconds=120,
+                quota_standby_refresh_interval_seconds=600,
             )
 
             result = switch_account(config, "Work", codex_home=codex_home)
@@ -37,8 +37,8 @@ class SwitcherTests(unittest.TestCase):
             self.assertEqual(
                 (runtime / "config.toml").read_text(),
                 'selected_alias = "Work"\n'
-                "active_refresh_interval_seconds = 120\n"
-                "standby_refresh_interval_seconds = 600\n"
+                "quota_active_refresh_interval_seconds = 120\n"
+                "quota_standby_refresh_interval_seconds = 600\n"
                 "direct_max_attempts = 3\n"
                 "direct_timeout_seconds = 8\n"
                 "activate_timeout_seconds = 90\n"

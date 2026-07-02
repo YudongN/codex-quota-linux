@@ -48,8 +48,8 @@ class AuthStoreTests(unittest.TestCase):
             self.assertEqual(
                 (runtime / "config.toml").read_text(),
                 'selected_alias = "Personal"\n'
-                "active_refresh_interval_seconds = 120\n"
-                "standby_refresh_interval_seconds = 600\n"
+                "quota_active_refresh_interval_seconds = 120\n"
+                "quota_standby_refresh_interval_seconds = 600\n"
                 "direct_max_attempts = 3\n"
                 "direct_timeout_seconds = 8\n"
                 "activate_timeout_seconds = 90\n"
