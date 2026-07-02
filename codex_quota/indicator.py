@@ -212,7 +212,7 @@ def run_indicator(config: AppConfig) -> int:
                 rebuild_menu(current_quota)
 
     apply_state(load_cached_state(config))
-    refresh_async(refresh_reset_credits=False)
+    refresh_async(force_reset_credits=True)
     GLib.timeout_add_seconds(60, menu_text_timer)
     GLib.timeout_add_seconds(config.active_refresh_interval_seconds, active_refresh_timer)
     GLib.timeout_add_seconds(config.standby_refresh_interval_seconds, standby_refresh_timer)

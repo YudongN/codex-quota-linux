@@ -36,6 +36,17 @@ class IndicatorTests(unittest.TestCase):
         self.assertIn("apply_state(load_cached_state(config))", source)
         self.assertNotIn("apply_state(fetch_state(config))", source)
 
+    def test_indicator_startup_forces_reset_credits_after_cache_render(self):
+        source = inspect.getsource(indicator.run_indicator)
+
+        cache_index = source.index("apply_state(load_cached_state(config))")
+        refresh_index = source.index(
+            "refresh_async(force_reset_credits=True)",
+            cache_index,
+        )
+
+        self.assertLess(cache_index, refresh_index)
+
     def test_activate_all_menu_item_is_below_refresh_all(self):
         source = inspect.getsource(indicator.run_indicator)
 
