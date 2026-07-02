@@ -19,6 +19,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.direct_max_attempts, 3)
             self.assertEqual(config.direct_timeout_seconds, 8)
             self.assertEqual(config.activate_timeout_seconds, 90)
+            self.assertEqual(config.reset_credits_refresh_interval_seconds, 86400)
             self.assertEqual(
                 (root / ".runtime" / "config.toml").read_text(),
                 'selected_alias = ""\n'
@@ -26,7 +27,8 @@ class ConfigTests(unittest.TestCase):
                 "standby_refresh_interval_seconds = 600\n"
                 "direct_max_attempts = 3\n"
                 "direct_timeout_seconds = 8\n"
-                "activate_timeout_seconds = 90\n",
+                "activate_timeout_seconds = 90\n"
+                "reset_credits_refresh_interval_seconds = 86400\n",
             )
 
     def test_load_config_migrates_old_current_alias_without_main_default(self):
@@ -46,6 +48,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.direct_max_attempts, 3)
             self.assertEqual(config.direct_timeout_seconds, 8)
             self.assertEqual(config.activate_timeout_seconds, 90)
+            self.assertEqual(config.reset_credits_refresh_interval_seconds, 86400)
             self.assertEqual(
                 (runtime / "config.toml").read_text(),
                 'selected_alias = "Outlook"\n'
@@ -53,7 +56,8 @@ class ConfigTests(unittest.TestCase):
                 "standby_refresh_interval_seconds = 600\n"
                 "direct_max_attempts = 3\n"
                 "direct_timeout_seconds = 8\n"
-                "activate_timeout_seconds = 90\n",
+                "activate_timeout_seconds = 90\n"
+                "reset_credits_refresh_interval_seconds = 86400\n",
             )
 
     def test_load_config_does_not_rewrite_complete_current_config(self):
@@ -68,6 +72,7 @@ class ConfigTests(unittest.TestCase):
                 "direct_max_attempts = 4\n"
                 "direct_timeout_seconds = 9\n"
                 "activate_timeout_seconds = 12\n"
+                "reset_credits_refresh_interval_seconds = 604800\n"
             )
 
             with patch("codex_quota.config.save_config") as save:
@@ -80,6 +85,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.direct_max_attempts, 4)
             self.assertEqual(config.direct_timeout_seconds, 9)
             self.assertEqual(config.activate_timeout_seconds, 12)
+            self.assertEqual(config.reset_credits_refresh_interval_seconds, 604800)
 
     def test_save_config_writes_only_current_keys(self):
         with TemporaryDirectory() as tempdir:
@@ -93,6 +99,7 @@ class ConfigTests(unittest.TestCase):
                 direct_max_attempts=4,
                 direct_timeout_seconds=9,
                 activate_timeout_seconds=12,
+                reset_credits_refresh_interval_seconds=604800,
             )
 
             save_config(config, selected_alias="Work")
@@ -104,7 +111,8 @@ class ConfigTests(unittest.TestCase):
                 "standby_refresh_interval_seconds = 600\n"
                 "direct_max_attempts = 4\n"
                 "direct_timeout_seconds = 9\n"
-                "activate_timeout_seconds = 12\n",
+                "activate_timeout_seconds = 12\n"
+                "reset_credits_refresh_interval_seconds = 604800\n",
             )
 
     def test_save_config_ignores_preexisting_fixed_temp_symlink(self):

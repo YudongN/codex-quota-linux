@@ -15,6 +15,9 @@ from typing import Any
 
 
 DIRECT_USAGE_ENDPOINT = "https://chatgpt.com/backend-api/wham/usage"
+DIRECT_RESET_CREDITS_ENDPOINT = (
+    "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
+)
 
 
 class CodexClientError(RuntimeError):
@@ -34,6 +37,22 @@ class DirectQuotaAuthError(DirectQuotaError):
 
 
 class DirectQuotaSchemaError(DirectQuotaError):
+    pass
+
+
+class DirectResetCreditsError(RuntimeError):
+    pass
+
+
+class DirectResetCreditsTransientError(DirectResetCreditsError):
+    pass
+
+
+class DirectResetCreditsAuthError(DirectResetCreditsError):
+    pass
+
+
+class DirectResetCreditsSchemaError(DirectResetCreditsError):
     pass
 
 
@@ -100,6 +119,70 @@ class DirectQuotaClient:
             raise DirectQuotaSchemaError("Backend changed")
         if _payload_looks_auth_failure(payload):
             raise DirectQuotaAuthError("direct quota auth failed")
+        return payload
+
+
+class DirectResetCreditsClient:
+    def __init__(
+        self,
+        *,
+        endpoint: str = DIRECT_RESET_CREDITS_ENDPOINT,
+        timeout_seconds: float = 8.0,
+        max_attempts: int = 3,
+        opener: Any = None,
+    ):
+        self.endpoint = endpoint
+        self.timeout_seconds = timeout_seconds
+        self.max_attempts = max(1, max_attempts)
+        self.opener = opener or urllib.request.urlopen
+
+    def read_reset_credits(self, auth_home: Path) -> dict[str, Any]:
+        try:
+            token = _read_access_token(auth_home / "auth.json")
+        except DirectQuotaAuthError as exc:
+            raise DirectResetCreditsAuthError("direct reset credits auth failed") from exc
+        last_error: DirectResetCreditsTransientError | None = None
+        for _attempt in range(self.max_attempts):
+            try:
+                return self._read_once(token)
+            except DirectResetCreditsTransientError as exc:
+                last_error = exc
+        raise last_error or DirectResetCreditsTransientError("reset credits request failed")
+
+    def _read_once(self, token: str) -> dict[str, Any]:
+        request = urllib.request.Request(
+            self.endpoint,
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+            method="GET",
+        )
+        try:
+            with self.opener(request, timeout=self.timeout_seconds) as response:
+                body = response.read()
+                status = getattr(response, "status", None)
+        except urllib.error.HTTPError as exc:
+            body = exc.read()
+            raise _direct_reset_credits_http_error(exc.code, body) from exc
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            socket.timeout,
+            ssl.SSLError,
+            ConnectionError,
+        ) as exc:
+            raise DirectResetCreditsTransientError("reset credits request failed") from exc
+        if isinstance(status, int) and status >= 400:
+            raise _direct_reset_credits_http_error(status, body)
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise DirectResetCreditsSchemaError("Backend changed") from exc
+        if not isinstance(payload, dict):
+            raise DirectResetCreditsSchemaError("Backend changed")
+        if _payload_looks_auth_failure(payload):
+            raise DirectResetCreditsAuthError("direct reset credits auth failed")
         return payload
 
 
@@ -213,6 +296,17 @@ def _direct_http_error(status: int, body: bytes) -> DirectQuotaError:
     if status in {408, 429} or status >= 500:
         return DirectQuotaTransientError("quota request failed")
     return DirectQuotaSchemaError("Backend changed")
+
+
+def _direct_reset_credits_http_error(
+    status: int,
+    body: bytes,
+) -> DirectResetCreditsError:
+    if status in {401, 403} or _body_looks_auth_failure(body):
+        return DirectResetCreditsAuthError("direct reset credits auth failed")
+    if status in {408, 429} or status >= 500:
+        return DirectResetCreditsTransientError("reset credits request failed")
+    return DirectResetCreditsSchemaError("Backend changed")
 
 
 def _body_looks_auth_failure(body: bytes) -> bool:

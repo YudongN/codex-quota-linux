@@ -9,7 +9,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from .accounts import AccountSlot, discover_account_slots
+from .accounts import AccountSlot, account_slot_path, discover_account_slots
 from .auth_info import read_account_info
 from .auth_sync import sync_refreshed_auth
 from .client import (
@@ -19,6 +19,10 @@ from .client import (
     DirectQuotaClient,
     DirectQuotaSchemaError,
     DirectQuotaTransientError,
+    DirectResetCreditsAuthError,
+    DirectResetCreditsClient,
+    DirectResetCreditsSchemaError,
+    DirectResetCreditsTransientError,
 )
 from .config import AppConfig
 from .quota import (
@@ -29,6 +33,15 @@ from .quota import (
     parse_direct_usage,
     parse_rate_limits,
     save_cache,
+)
+from .reset_credits import (
+    ResetCreditsSchemaError,
+    ResetCreditsSnapshot,
+    failed_reset_credits_snapshot,
+    load_reset_credits_cache,
+    parse_reset_credits,
+    reset_credits_cache_is_fresh,
+    save_reset_credits_cache,
 )
 
 
@@ -91,6 +104,28 @@ def load_cached_state(config: AppConfig) -> QuotaState:
     return QuotaState(current=current, standby=standby)
 
 
+def check_reset_credits(
+    config: AppConfig,
+    *,
+    all_accounts: bool,
+    aliases: list[str],
+    force_refresh: bool = True,
+) -> list[ResetCreditsSnapshot]:
+    slots = _select_reset_credits_slots(
+        config,
+        all_accounts=all_accounts,
+        aliases=aliases,
+    )
+    return [
+        _fetch_reset_credits_slot(
+            slot,
+            config=config,
+            force_refresh=force_refresh,
+        )
+        for slot in slots
+    ]
+
+
 def _fetch_slots_parallel(
     slots: list[AccountSlot],
     config: AppConfig,
@@ -129,6 +164,74 @@ def _cached_slot_snapshot(slot: AccountSlot) -> QuotaSnapshot:
         error="not refreshed yet",
         cache_path=None,
     )
+
+
+def _fetch_reset_credits_slot(
+    slot: AccountSlot,
+    *,
+    config: AppConfig,
+    force_refresh: bool,
+) -> ResetCreditsSnapshot:
+    return _fetch_reset_credits_snapshot(
+        alias=slot.alias,
+        auth_home=slot.path,
+        cache_path=slot.path / "reset_credits_cache.json",
+        runtime_dir=config.runtime_dir,
+        direct_max_attempts=config.direct_max_attempts,
+        direct_timeout_seconds=config.direct_timeout_seconds,
+        ttl_seconds=config.reset_credits_refresh_interval_seconds,
+        force_refresh=force_refresh,
+    )
+
+
+def _fetch_reset_credits_snapshot(
+    *,
+    alias: str,
+    auth_home: Path,
+    cache_path: Path,
+    runtime_dir: Path | None,
+    direct_max_attempts: int = 3,
+    direct_timeout_seconds: int = 8,
+    ttl_seconds: int = 86400,
+    force_refresh: bool = True,
+) -> ResetCreditsSnapshot:
+    cached = load_reset_credits_cache(cache_path)
+    if not force_refresh and reset_credits_cache_is_fresh(
+        cached,
+        ttl_seconds=ttl_seconds,
+    ):
+        assert cached is not None
+        return cached
+    try:
+        response = DirectResetCreditsClient(
+            max_attempts=direct_max_attempts,
+            timeout_seconds=direct_timeout_seconds,
+        ).read_reset_credits(auth_home)
+        snapshot = parse_reset_credits(response, alias=alias)
+        save_reset_credits_cache(cache_path, snapshot)
+        return snapshot
+    except DirectResetCreditsAuthError as exc:
+        return _repair_reset_credits_snapshot(
+            alias=alias,
+            auth_home=auth_home,
+            cache_path=cache_path,
+            runtime_dir=runtime_dir,
+            fallback_error=str(exc),
+            direct_max_attempts=direct_max_attempts,
+            direct_timeout_seconds=direct_timeout_seconds,
+        )
+    except DirectResetCreditsTransientError as exc:
+        return failed_reset_credits_snapshot(
+            alias=alias,
+            error=str(exc),
+            cache_path=cache_path,
+        )
+    except (DirectResetCreditsSchemaError, ResetCreditsSchemaError) as exc:
+        return failed_reset_credits_snapshot(
+            alias=alias,
+            error=str(exc),
+            cache_path=cache_path,
+        )
 
 
 def _fetch_account_snapshot(
@@ -207,6 +310,49 @@ def _repair_account_snapshot(
         )
 
 
+def _repair_reset_credits_snapshot(
+    *,
+    alias: str,
+    auth_home: Path,
+    cache_path: Path,
+    runtime_dir: Path | None,
+    fallback_error: str,
+    direct_max_attempts: int,
+    direct_timeout_seconds: int,
+) -> ResetCreditsSnapshot:
+    try:
+        with _temporary_codex_home(auth_home, runtime_dir) as codex_home:
+            CodexAppServerClient(
+                codex_home=codex_home,
+                timeout_seconds=APP_SERVER_TIMEOUT_SECONDS,
+            ).read_rate_limits()
+            _sync_refreshed_auth_with_lock(
+                source=codex_home / "auth.json",
+                target=auth_home / "auth.json",
+                runtime_dir=runtime_dir,
+            )
+        response = DirectResetCreditsClient(
+            max_attempts=direct_max_attempts,
+            timeout_seconds=direct_timeout_seconds,
+        ).read_reset_credits(auth_home)
+        snapshot = parse_reset_credits(response, alias=alias)
+        save_reset_credits_cache(cache_path, snapshot)
+        return snapshot
+    except (
+        CodexClientError,
+        DirectResetCreditsAuthError,
+        DirectResetCreditsTransientError,
+        DirectResetCreditsSchemaError,
+        ResetCreditsSchemaError,
+        OSError,
+    ) as exc:
+        return failed_reset_credits_snapshot(
+            alias=alias,
+            error=str(exc) or fallback_error,
+            cache_path=cache_path,
+        )
+
+
 def _sync_refreshed_auth_with_lock(
     *,
     source: Path,
@@ -234,6 +380,35 @@ def _selected_slot(
         if slot.alias == config.selected_alias:
             return slot
     return slots[0]
+
+
+def _select_reset_credits_slots(
+    config: AppConfig,
+    *,
+    all_accounts: bool,
+    aliases: list[str],
+) -> list[AccountSlot]:
+    if all_accounts and aliases:
+        raise ValueError("use --all or --alias, not both")
+    if all_accounts:
+        slots = discover_account_slots(config.accounts_dir)
+        if not slots:
+            raise ValueError("no account slots found")
+        return slots
+    if aliases:
+        return [_slot_for_alias(config, alias) for alias in aliases]
+    slot = _selected_slot(config)
+    if slot is None:
+        raise ValueError("no account slots found")
+    return [slot]
+
+
+def _slot_for_alias(config: AppConfig, alias: str) -> AccountSlot:
+    slot_home = account_slot_path(config.accounts_dir, alias)
+    auth_path = slot_home / "auth.json"
+    if not auth_path.is_file():
+        raise ValueError(f"account slot '{slot_home.name}' does not have auth.json")
+    return AccountSlot(alias=slot_home.name, path=slot_home)
 
 
 class _temporary_codex_home:

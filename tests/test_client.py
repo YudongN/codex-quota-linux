@@ -12,6 +12,7 @@ from codex_quota.client import (
     CodexAppServerClient,
     CodexClientError,
     DirectQuotaClient,
+    DirectResetCreditsClient,
 )
 
 
@@ -68,6 +69,61 @@ class DirectQuotaClientTests(unittest.TestCase):
 
         self.assertEqual(result["plan_type"], "plus")
         self.assertEqual(attempts, 3)
+
+
+class DirectResetCreditsClientTests(unittest.TestCase):
+    def test_reads_reset_credits_with_slot_access_token(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            auth_home = Path(tempdir)
+            (auth_home / "auth.json").write_text(
+                '{"tokens":{"access_token":"test-access-token"}}'
+            )
+            calls = []
+
+            def opener(request, timeout):
+                calls.append((request, timeout))
+                return _FakeHttpResponse({"available_count": 1, "credits": []})
+
+            result = DirectResetCreditsClient(
+                endpoint="https://example.test/wham/rate-limit-reset-credits",
+                timeout_seconds=8,
+                max_attempts=3,
+                opener=opener,
+            ).read_reset_credits(auth_home)
+
+        self.assertEqual(result["available_count"], 1)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1], 8)
+        self.assertEqual(
+            calls[0][0].get_header("Authorization"),
+            "Bearer test-access-token",
+        )
+
+    def test_retries_transient_reset_credits_errors(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            auth_home = Path(tempdir)
+            (auth_home / "auth.json").write_text(
+                '{"tokens":{"access_token":"test-access-token"}}'
+            )
+            attempts = 0
+
+            def opener(_request, timeout):
+                nonlocal attempts
+                del timeout
+                attempts += 1
+                if attempts < 2:
+                    raise urllib.error.URLError("TLS handshake failed")
+                return _FakeHttpResponse({"available_count": 1, "credits": []})
+
+            result = DirectResetCreditsClient(
+                endpoint="https://example.test/wham/rate-limit-reset-credits",
+                timeout_seconds=8,
+                max_attempts=3,
+                opener=opener,
+            ).read_reset_credits(auth_home)
+
+        self.assertEqual(result["available_count"], 1)
+        self.assertEqual(attempts, 2)
 
 
 class CodexAppServerClientTests(unittest.TestCase):

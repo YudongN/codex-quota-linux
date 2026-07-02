@@ -17,6 +17,7 @@ class AppConfig:
     direct_max_attempts: int = 3
     direct_timeout_seconds: int = 8
     activate_timeout_seconds: int = 90
+    reset_credits_refresh_interval_seconds: int = 86400
 
     @property
     def accounts_dir(self) -> Path:
@@ -49,6 +50,10 @@ def load_config(root: Path | None = None) -> AppConfig:
         direct_max_attempts=_int_value(values.get("direct_max_attempts"), 3),
         direct_timeout_seconds=_int_value(values.get("direct_timeout_seconds"), 8),
         activate_timeout_seconds=_int_value(values.get("activate_timeout_seconds"), 90),
+        reset_credits_refresh_interval_seconds=_int_value(
+            values.get("reset_credits_refresh_interval_seconds"),
+            86400,
+        ),
     )
     if _config_needs_save(config_exists=config_exists, values=values):
         save_config(config)
@@ -66,6 +71,8 @@ def save_config(config: AppConfig, *, selected_alias: str | None = None) -> None
         f"direct_max_attempts = {config.direct_max_attempts}\n"
         f"direct_timeout_seconds = {config.direct_timeout_seconds}\n"
         f"activate_timeout_seconds = {config.activate_timeout_seconds}\n"
+        f"reset_credits_refresh_interval_seconds = "
+        f"{config.reset_credits_refresh_interval_seconds}\n"
     )
     fd, temp_name = tempfile.mkstemp(prefix=".config.toml.tmp-", dir=path.parent)
     temp_path = Path(temp_name)
@@ -89,6 +96,7 @@ def _config_needs_save(*, config_exists: bool, values: dict[str, object]) -> boo
         "direct_max_attempts",
         "direct_timeout_seconds",
         "activate_timeout_seconds",
+        "reset_credits_refresh_interval_seconds",
     ):
         if not isinstance(values.get(key), int) or values[key] <= 0:
             return True

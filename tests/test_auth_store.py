@@ -52,7 +52,8 @@ class AuthStoreTests(unittest.TestCase):
                 "standby_refresh_interval_seconds = 600\n"
                 "direct_max_attempts = 3\n"
                 "direct_timeout_seconds = 8\n"
-                "activate_timeout_seconds = 90\n",
+                "activate_timeout_seconds = 90\n"
+                "reset_credits_refresh_interval_seconds = 86400\n",
             )
 
     def test_add_account_restores_missing_default_auth_to_missing_state(self):

@@ -4,7 +4,7 @@ import argparse
 import sys
 
 from .activation import ActivationError, activate_window
-from .app import fetch_state
+from .app import check_reset_credits, fetch_state
 from .auth_store import AddAccountError, add_account
 from .config import load_config
 from .indicator import run_indicator
@@ -18,6 +18,7 @@ from .quota import (
     menu_meter_line,
     menu_window_line,
 )
+from .reset_credits import reset_credits_table_rows
 from .switcher import SwitchError, switch_account
 
 
@@ -58,6 +59,22 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="show accounts that would be activated without changing auth",
     )
+    reset_parser = subparsers.add_parser(
+        "check-reset-credits",
+        help="query Codex reset credits",
+    )
+    reset_parser.add_argument(
+        "--all",
+        action="store_true",
+        dest="all_accounts",
+        help="check all account slots",
+    )
+    reset_parser.add_argument(
+        "--alias",
+        action="append",
+        default=[],
+        help="check a specific account alias; repeat for multiple accounts",
+    )
     args = parser.parse_args(argv)
 
     command = args.command or "run"
@@ -77,6 +94,11 @@ def main(argv: list[str] | None = None) -> int:
             aliases=args.alias,
             timeout_seconds=args.timeout,
             dry_run=args.dry_run,
+        )
+    if command == "check-reset-credits":
+        return _check_reset_credits(
+            all_accounts=args.all_accounts,
+            aliases=args.alias,
         )
     parser.error(f"unknown command: {command}")
     return 2
@@ -179,6 +201,26 @@ def _activate_window(
     return 0 if all(result.status in {"success", "dry-run"} for result in results) else 1
 
 
+def _check_reset_credits(
+    *,
+    all_accounts: bool,
+    aliases: list[str],
+) -> int:
+    config = load_config()
+    try:
+        snapshots = check_reset_credits(
+            config,
+            all_accounts=all_accounts,
+            aliases=aliases,
+            force_refresh=True,
+        )
+    except ValueError as exc:
+        print(f"Check reset credits failed: {exc}", file=sys.stderr)
+        return 1
+    _print_reset_credits_table(snapshots)
+    return 1 if any(snapshot.error for snapshot in snapshots) else 0
+
+
 def _activation_result_line(result) -> str:
     line = f"{result.alias}: {result.status}"
     if result.tokens_used is not None:
@@ -203,6 +245,26 @@ def _print_standby_snapshot(snapshot) -> None:
         print(menu_window_line(window))
     if not snapshot.windows:
         print("Quota unavailable")
+
+
+def _print_reset_credits_table(snapshots) -> None:
+    rows = reset_credits_table_rows(snapshots)
+    columns = [
+        "alias",
+        "available_count",
+        "status",
+        "title",
+        "granted_at",
+        "expires_at",
+    ]
+    widths = {
+        column: max(len(column), *(len(row[column]) for row in rows))
+        for column in columns
+    }
+    print("  ".join(column.ljust(widths[column]) for column in columns))
+    print("  ".join("-" * widths[column] for column in columns))
+    for row in rows:
+        print("  ".join(row[column].ljust(widths[column]) for column in columns))
 
 
 if __name__ == "__main__":

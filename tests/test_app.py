@@ -12,8 +12,10 @@ from codex_quota.app import (
     _ACTIVE_TEMP_HOMES,
     _TEMP_HOME_LOCK,
     _fetch_account_snapshot,
+    _fetch_reset_credits_snapshot,
     _prune_temporary_codex_homes,
     _temporary_codex_home,
+    check_reset_credits,
     fetch_state,
     load_cached_state,
 )
@@ -21,9 +23,11 @@ from codex_quota.client import (
     CodexClientError,
     DirectQuotaAuthError,
     DirectQuotaTransientError,
+    DirectResetCreditsAuthError,
 )
 from codex_quota.config import AppConfig
 from codex_quota.quota import QuotaSnapshot, parse_rate_limits, save_cache
+from codex_quota.reset_credits import ResetCreditsSnapshot
 
 
 class AppStateTests(unittest.TestCase):
@@ -474,6 +478,103 @@ class AppStateTests(unittest.TestCase):
 
             self.assertFalse(stale.exists())
 
+    def test_check_reset_credits_fetches_selected_account_by_default(self):
+        with TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            accounts = root / ".runtime" / "accounts"
+            for alias in ("Backup", "Work"):
+                slot = accounts / alias
+                slot.mkdir(parents=True)
+                (slot / "auth.json").write_text("{}")
+            config = AppConfig(
+                project_root=root,
+                runtime_dir=root / ".runtime",
+                selected_alias="Work",
+            )
+
+            with patch("codex_quota.app._fetch_reset_credits_slot") as fetch:
+                fetch.side_effect = lambda slot, config, force_refresh: ResetCreditsSnapshot(
+                    alias=slot.alias,
+                    available_count=0,
+                    credits=[],
+                    updated_at=100,
+                )
+                snapshots = check_reset_credits(
+                    config,
+                    all_accounts=False,
+                    aliases=[],
+                )
+
+        self.assertEqual([snapshot.alias for snapshot in snapshots], ["Work"])
+        self.assertTrue(fetch.call_args.kwargs["force_refresh"])
+
+    def test_check_reset_credits_all_continues_after_account_failure(self):
+        with TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            accounts = root / ".runtime" / "accounts"
+            for alias in ("Backup", "Work"):
+                slot = accounts / alias
+                slot.mkdir(parents=True)
+                (slot / "auth.json").write_text("{}")
+            config = AppConfig(project_root=root, runtime_dir=root / ".runtime")
+
+            with patch("codex_quota.app._fetch_reset_credits_slot") as fetch:
+                fetch.side_effect = [
+                    ResetCreditsSnapshot(
+                        alias="Backup",
+                        available_count=0,
+                        credits=[],
+                        updated_at=0,
+                        error="reset credits request failed",
+                    ),
+                    ResetCreditsSnapshot(
+                        alias="Work",
+                        available_count=1,
+                        credits=[],
+                        updated_at=100,
+                    ),
+                ]
+                snapshots = check_reset_credits(
+                    config,
+                    all_accounts=True,
+                    aliases=[],
+                )
+
+        self.assertEqual([snapshot.alias for snapshot in snapshots], ["Backup", "Work"])
+        self.assertEqual(snapshots[0].error, "reset credits request failed")
+        self.assertIsNone(snapshots[1].error)
+
+    def test_fetch_reset_credits_auth_failure_repairs_then_retries_direct(self):
+        with TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            auth_home = root / ".runtime" / "accounts" / "Work"
+            auth_home.mkdir(parents=True)
+            _write_auth(auth_home / "auth.json", account_id="acct-work", marker="original")
+            direct_client = _AuthThenResetCreditsClient()
+
+            with patch(
+                "codex_quota.app.DirectResetCreditsClient",
+                return_value=direct_client,
+            ), patch(
+                "codex_quota.app.CodexAppServerClient",
+                side_effect=lambda **kwargs: _RefreshingFakeClient(
+                    marker="refreshed",
+                    **kwargs,
+                ),
+            ):
+                snapshot = _fetch_reset_credits_snapshot(
+                    alias="Work",
+                    auth_home=auth_home,
+                    cache_path=auth_home / "reset_credits_cache.json",
+                    runtime_dir=root / ".runtime",
+                    direct_max_attempts=3,
+                    direct_timeout_seconds=8,
+                )
+
+            self.assertEqual(snapshot.available_count, 1)
+            self.assertEqual(direct_client.calls, 2)
+            self.assertEqual(_auth_marker(auth_home / "auth.json"), "refreshed")
+
 
 class _FakeClient:
     def __init__(self, used_percent=32):
@@ -513,6 +614,27 @@ class _FailingDirectClient:
 
     def read_usage(self, _auth_home):
         raise self.error
+
+
+class _AuthThenResetCreditsClient:
+    def __init__(self):
+        self.calls = 0
+
+    def read_reset_credits(self, _auth_home):
+        self.calls += 1
+        if self.calls == 1:
+            raise DirectResetCreditsAuthError("direct reset credits auth failed")
+        return {
+            "available_count": 1,
+            "credits": [
+                {
+                    "status": "available",
+                    "title": "Reset",
+                    "granted_at": "2026-06-01T00:00:00Z",
+                    "expires_at": "2026-07-01T00:00:00Z",
+                }
+            ],
+        }
 
 
 def _direct_usage(used_percent):
