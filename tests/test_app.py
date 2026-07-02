@@ -27,7 +27,10 @@ from codex_quota.client import (
 )
 from codex_quota.config import AppConfig
 from codex_quota.quota import QuotaSnapshot, parse_rate_limits, save_cache
-from codex_quota.reset_credits import ResetCreditsSnapshot
+from codex_quota.reset_credits import (
+    ResetCreditsSnapshot,
+    save_reset_credits_cache,
+)
 
 
 class AppStateTests(unittest.TestCase):
@@ -134,6 +137,97 @@ class AppStateTests(unittest.TestCase):
             self.assertEqual(state.current.alias, "Work")
             self.assertEqual(state.current.windows[0].left_percent, 91)
             self.assertEqual([snapshot.alias for snapshot in state.standby], ["Personal"])
+
+    def test_load_cached_state_includes_reset_credits_cache_without_live_fetch(self):
+        with TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            accounts = root / ".runtime" / "accounts"
+            for alias, used in (("Personal", 32), ("Work", 9)):
+                slot = accounts / alias
+                slot.mkdir(parents=True)
+                (slot / "auth.json").write_text("{}")
+                save_cache(
+                    slot / "cache.json",
+                    parse_rate_limits(
+                        {
+                            "rateLimits": {
+                                "primary": {
+                                    "usedPercent": used,
+                                    "windowDurationMins": 300,
+                                }
+                            }
+                        },
+                        alias=alias,
+                        email=f"{alias.lower()}@example.com",
+                        now=100,
+                    ),
+                )
+                save_reset_credits_cache(
+                    slot / "reset_credits_cache.json",
+                    ResetCreditsSnapshot(
+                        alias=alias,
+                        available_count=4 if alias == "Work" else 1,
+                        credits=[],
+                        updated_at=100,
+                    ),
+                )
+            config = AppConfig(
+                project_root=root,
+                runtime_dir=root / ".runtime",
+                selected_alias="Work",
+            )
+
+            with patch("codex_quota.app._fetch_reset_credits_slot") as live_fetch:
+                state = load_cached_state(config)
+
+            live_fetch.assert_not_called()
+            self.assertEqual(state.reset_credits["Work"].available_count, 4)
+            self.assertEqual(state.reset_credits["Personal"].available_count, 1)
+
+    def test_fetch_state_refreshes_reset_credits_only_when_requested(self):
+        with TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            accounts = root / ".runtime" / "accounts"
+            for alias in ("Backup", "Work"):
+                slot = accounts / alias
+                slot.mkdir(parents=True)
+                (slot / "auth.json").write_text("{}")
+            config = AppConfig(
+                project_root=root,
+                runtime_dir=root / ".runtime",
+                selected_alias="Work",
+            )
+            calls: list[tuple[str, bool]] = []
+
+            def fetch_reset(slot, *, config, force_refresh):
+                calls.append((slot.alias, force_refresh))
+                return ResetCreditsSnapshot(
+                    alias=slot.alias,
+                    available_count=1,
+                    credits=[],
+                    updated_at=100,
+                )
+
+            with patch("codex_quota.app._fetch_slot_snapshot") as fetch_quota, patch(
+                "codex_quota.app._fetch_reset_credits_slot",
+                side_effect=fetch_reset,
+            ):
+                fetch_quota.side_effect = lambda slot, config: QuotaSnapshot(
+                    alias=slot.alias,
+                    email=None,
+                    plan=None,
+                    windows=[],
+                    updated_at=100,
+                )
+                state = fetch_state(
+                    config,
+                    refresh_reset_credits=True,
+                    force_reset_credits=False,
+                )
+
+        self.assertEqual([alias for alias, _force in calls], ["Work", "Backup"])
+        self.assertEqual([force for _alias, force in calls], [False, False])
+        self.assertEqual(state.reset_credits["Work"].available_count, 1)
 
     def test_fetch_account_snapshot_uses_direct_quota_before_app_server(self):
         with TemporaryDirectory() as tempdir:

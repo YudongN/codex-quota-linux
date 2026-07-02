@@ -62,6 +62,34 @@ class IndicatorTests(unittest.TestCase):
         self.assertNotIn("refresh_async()", timer_source)
         self.assertNotIn("fetch_state", timer_source)
         self.assertNotIn("fetch_snapshot", timer_source)
+        self.assertNotIn("check_reset_credits", timer_source)
+
+    def test_refresh_all_forces_reset_credits_refresh(self):
+        source = inspect.getsource(indicator.run_indicator)
+
+        self.assertIn("refresh_async(force_reset_credits=True)", source)
+        self.assertIn(
+            "fetch_state(current_config, refresh_reset_credits=True, force_reset_credits=force_reset_credits)",
+            source,
+        )
+
+    def test_standby_timer_checks_reset_credits_ttl_without_force(self):
+        source = inspect.getsource(indicator.run_indicator)
+        timer_start = source.index("def standby_refresh_timer")
+        timer_end = source.index("def menu_text_timer")
+        timer_source = source[timer_start:timer_end]
+
+        self.assertIn("refresh_standby_async()", timer_source)
+        self.assertIn("refresh_async(force_reset_credits=False)", source)
+
+    def test_account_sections_render_reset_credits_line(self):
+        current_source = inspect.getsource(indicator._append_current_account_section)
+        switch_source = inspect.getsource(indicator._append_switch_account_submenu)
+        helper_source = inspect.getsource(indicator._account_lines_with_reset)
+
+        self.assertIn("_account_lines_with_reset", current_source)
+        self.assertIn("format_reset_credits_menu_line", helper_source)
+        self.assertIn("reset_credits", switch_source)
 
     def test_indicator_workers_are_started_with_exception_guard(self):
         source = inspect.getsource(indicator.run_indicator)
@@ -157,12 +185,17 @@ class IndicatorTests(unittest.TestCase):
         )
 
         reordered = _reorder_quota_for_alias(
-            QuotaState(current=personal, standby=[backup, work]),
+            QuotaState(
+                current=personal,
+                standby=[backup, work],
+                reset_credits={"Work": object()},
+            ),
             "Work",
         )
 
         self.assertEqual(reordered.current.alias, "Work")
         self.assertEqual([snapshot.alias for snapshot in reordered.standby], ["Personal", "Backup"])
+        self.assertIn("Work", reordered.reset_credits)
 
 
 if __name__ == "__main__":

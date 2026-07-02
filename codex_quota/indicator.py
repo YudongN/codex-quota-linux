@@ -14,6 +14,7 @@ from .quota import (
     standby_account_menu_lines,
     status_name,
 )
+from .reset_credits import format_reset_credits_menu_line
 from .switcher import SwitchError, switch_account
 
 
@@ -42,11 +43,16 @@ def run_indicator(config: AppConfig) -> int:
     def rebuild_menu(quota: QuotaState) -> None:
         snapshot = quota.current
         menu = Gtk.Menu()
-        _append_current_account_section(menu, snapshot)
+        _append_current_account_section(
+            menu,
+            snapshot,
+            quota.reset_credits.get(snapshot.alias),
+        )
         _append_separator(menu)
         _append_switch_account_submenu(
             menu,
             quota.standby,
+            quota.reset_credits,
             on_switch=switch_async,
         )
         message = state.get("message")
@@ -55,7 +61,7 @@ def run_indicator(config: AppConfig) -> int:
             _append_label(menu, message)
         _append_separator(menu)
         refresh_item = Gtk.MenuItem(label="Refresh all")
-        refresh_item.connect("activate", lambda _item: refresh_async())
+        refresh_item.connect("activate", lambda _item: refresh_async(force_reset_credits=True))
         menu.append(refresh_item)
         activate_item = Gtk.MenuItem(label="Activate all")
         activate_item.connect("activate", lambda _item: activate_all_async())
@@ -85,11 +91,18 @@ def run_indicator(config: AppConfig) -> int:
     def worker_error(prefix: str) -> Callable[[Exception], None]:
         return lambda exc: GLib.idle_add(apply_worker_error, f"{prefix} failed: {exc}")
 
-    def refresh_async() -> None:
+    def refresh_async(
+        *,
+        refresh_reset_credits: bool = True,
+        force_reset_credits: bool = False,
+    ) -> None:
         def worker() -> None:
             current_config = state["config"]
             assert isinstance(current_config, AppConfig)
-            quota = fetch_state(current_config)
+            if refresh_reset_credits:
+                quota = fetch_state(current_config, refresh_reset_credits=True, force_reset_credits=force_reset_credits)
+            else:
+                quota = fetch_state(current_config)
             GLib.idle_add(apply_state, quota)
 
         _start_background_worker(worker, worker_error("Refresh"))
@@ -101,7 +114,11 @@ def run_indicator(config: AppConfig) -> int:
             current = fetch_snapshot(current_config)
             quota = state.get("quota")
             if isinstance(quota, QuotaState):
-                next_quota = QuotaState(current=current, standby=quota.standby)
+                next_quota = QuotaState(
+                    current=current,
+                    standby=quota.standby,
+                    reset_credits=quota.reset_credits,
+                )
             else:
                 next_quota = fetch_state(current_config)
             GLib.idle_add(apply_state, next_quota)
@@ -109,7 +126,7 @@ def run_indicator(config: AppConfig) -> int:
         _start_background_worker(worker, worker_error("Refresh"))
 
     def refresh_standby_async() -> None:
-        refresh_async()
+        refresh_async(force_reset_credits=False)
 
     def switch_async(alias: str) -> None:
         def apply_switch_selected(new_config: AppConfig, alias: str) -> None:
@@ -195,7 +212,7 @@ def run_indicator(config: AppConfig) -> int:
                 rebuild_menu(current_quota)
 
     apply_state(load_cached_state(config))
-    refresh_async()
+    refresh_async(refresh_reset_credits=False)
     GLib.timeout_add_seconds(60, menu_text_timer)
     GLib.timeout_add_seconds(config.active_refresh_interval_seconds, active_refresh_timer)
     GLib.timeout_add_seconds(config.standby_refresh_interval_seconds, standby_refresh_timer)
@@ -257,16 +274,23 @@ def _reorder_quota_for_alias(quota: QuotaState, alias: str) -> QuotaState:
         standby = [quota.current]
         standby.extend(quota.standby[:index])
         standby.extend(quota.standby[index + 1 :])
-        return QuotaState(current=snapshot, standby=standby)
+        return QuotaState(
+            current=snapshot,
+            standby=standby,
+            reset_credits=quota.reset_credits,
+        )
     return quota
 
 
-def _append_current_account_section(menu, snapshot) -> None:
-    for line in current_account_menu_lines(snapshot):
+def _append_current_account_section(menu, snapshot, reset_credits=None) -> None:
+    for line in _account_lines_with_reset(
+        current_account_menu_lines(snapshot),
+        reset_credits,
+    ):
         _append_label(menu, line)
 
 
-def _append_switch_account_submenu(menu, snapshots, on_switch) -> None:
+def _append_switch_account_submenu(menu, snapshots, reset_credits, on_switch) -> None:
     import gi
 
     gi.require_version("Gtk", "3.0")
@@ -281,7 +305,10 @@ def _append_switch_account_submenu(menu, snapshots, on_switch) -> None:
     for index, snapshot in enumerate(snapshots):
         if index:
             _append_separator(switch_menu)
-        lines = standby_account_menu_lines(snapshot)
+        lines = _account_lines_with_reset(
+            standby_account_menu_lines(snapshot),
+            reset_credits.get(snapshot.alias),
+        )
         action_item = Gtk.MenuItem(label=lines[0])
         action_item.connect(
             "activate",
@@ -292,6 +319,13 @@ def _append_switch_account_submenu(menu, snapshots, on_switch) -> None:
             _append_label(switch_menu, line)
     item.set_submenu(switch_menu)
     menu.append(item)
+
+
+def _account_lines_with_reset(lines: list[str], reset_credits) -> list[str]:
+    next_lines = list(lines)
+    insert_at = max(0, len(next_lines) - 1)
+    next_lines.insert(insert_at, format_reset_credits_menu_line(reset_credits))
+    return next_lines
 
 
 def _append_label(menu, text: str):

@@ -6,7 +6,7 @@ import os
 import shutil
 import tempfile
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .accounts import AccountSlot, account_slot_path, discover_account_slots
@@ -55,6 +55,7 @@ _ACTIVE_TEMP_HOMES: set[Path] = set()
 class QuotaState:
     current: QuotaSnapshot
     standby: list[QuotaSnapshot]
+    reset_credits: dict[str, ResetCreditsSnapshot] = field(default_factory=dict)
 
 
 def fetch_snapshot(config: AppConfig) -> QuotaSnapshot:
@@ -70,7 +71,12 @@ def fetch_snapshot(config: AppConfig) -> QuotaSnapshot:
     return _fetch_slot_snapshot(slot, config)
 
 
-def fetch_state(config: AppConfig) -> QuotaState:
+def fetch_state(
+    config: AppConfig,
+    *,
+    refresh_reset_credits: bool = False,
+    force_reset_credits: bool = False,
+) -> QuotaState:
     _prune_temporary_codex_homes(config.runtime_dir)
     slots = discover_account_slots(config.accounts_dir)
     selected = _selected_slot(config, slots=slots)
@@ -79,7 +85,17 @@ def fetch_state(config: AppConfig) -> QuotaState:
     ordered_slots = [selected]
     ordered_slots.extend(slot for slot in slots if slot.alias != selected.alias)
     snapshots = _fetch_slots_parallel(ordered_slots, config)
-    return QuotaState(current=snapshots[0], standby=snapshots[1:])
+    reset_credits = _reset_credits_for_slots(
+        ordered_slots,
+        config=config,
+        refresh=refresh_reset_credits,
+        force_refresh=force_reset_credits,
+    )
+    return QuotaState(
+        current=snapshots[0],
+        standby=snapshots[1:],
+        reset_credits=reset_credits,
+    )
 
 
 def load_cached_state(config: AppConfig) -> QuotaState:
@@ -101,7 +117,16 @@ def load_cached_state(config: AppConfig) -> QuotaState:
         for slot in slots
         if slot.alias != selected.alias
     ]
-    return QuotaState(current=current, standby=standby)
+    return QuotaState(
+        current=current,
+        standby=standby,
+        reset_credits=_reset_credits_for_slots(
+            slots,
+            config=config,
+            refresh=False,
+            force_refresh=False,
+        ),
+    )
 
 
 def check_reset_credits(
@@ -164,6 +189,30 @@ def _cached_slot_snapshot(slot: AccountSlot) -> QuotaSnapshot:
         error="not refreshed yet",
         cache_path=None,
     )
+
+
+def _reset_credits_for_slots(
+    slots: list[AccountSlot],
+    *,
+    config: AppConfig,
+    refresh: bool,
+    force_refresh: bool,
+) -> dict[str, ResetCreditsSnapshot]:
+    snapshots: list[ResetCreditsSnapshot] = []
+    for slot in slots:
+        if refresh:
+            snapshots.append(
+                _fetch_reset_credits_slot(
+                    slot,
+                    config=config,
+                    force_refresh=force_refresh,
+                )
+            )
+            continue
+        cached = load_reset_credits_cache(slot.path / "reset_credits_cache.json")
+        if cached is not None:
+            snapshots.append(cached)
+    return {snapshot.alias: snapshot for snapshot in snapshots}
 
 
 def _fetch_reset_credits_slot(
